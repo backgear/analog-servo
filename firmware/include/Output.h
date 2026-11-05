@@ -3,9 +3,10 @@
 
 #include <stdint.h>
 
-/* Analog torque-command output: the real on-chip DAC1, two channels
- * (DAC_OUT1/DAC_OUT2, PA4/PA5) into a downstream differential-input
- * amplifier stage -- see docs/architecture.md.
+/* Analog torque-command output: the real on-chip DAC1 on L152 (DAC_OUT1/
+ * DAC_OUT2, PA4/PA5), or RC-filtered PWM on F103 (no on-chip DAC on that
+ * part -- see docs/rc-filter.md) -- either way into a downstream
+ * differential-input amplifier stage. See docs/architecture.md.
  *
  * Bipolar torque is encoded as **two unipolar channels**, not one channel
  * biased around a mid-scale code: "positive" and "negative" each sweep

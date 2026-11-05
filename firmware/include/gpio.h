@@ -1,16 +1,21 @@
 #ifndef GPIO_H
 #define GPIO_H
 
+#if defined(STM32L152xE)
 #include "stm32l1xx_hal.h"
+#else
+#include "stm32f1xx_hal.h"
+#endif
 
-/* NUCLEO-L152RE, board MB1136 rev C. Single-board firmware -- no family
- * switch here; see docs/bringup.md for the one required board mod
- * (DAC_OUT2/LD2 solder-bridge rework) and docs/architecture.md for the pin
- * map rationale this was carried over from.
+/* Two boards: NUCLEO-L152RE (board MB1136 rev C, `main`'s bench-validated
+ * target -- see docs/bringup.md for its one required board mod, the
+ * DAC_OUT2/LD2 solder-bridge rework) and STM32F103C8T6 "Blue Pill" (this
+ * `f103` branch -- no bench hours at all, see docs/boards.md). Pin numbers
+ * are identical on both except where a board comment below says otherwise.
  *
- * UNVERIFIED WITHOUT THE L152 DATASHEET AF TABLE IN HAND for a few of these
- * (STEP_PIN, ANALOG_VELOCITY_ADC_PIN's exact ADC channel) -- a one-#define
- * fix if wrong, flagged individually below. */
+ * UNVERIFIED WITHOUT THE RESPECTIVE DATASHEET AF TABLE IN HAND for a few of
+ * these (STEP_PIN, ANALOG_VELOCITY_ADC_PIN's exact ADC channel) -- a
+ * one-#define fix if wrong, flagged individually below. */
 
 /* STEP input (Mode A): TIM2_ETR, external clock mode 2. */
 #define STEP_GPIO_PORT GPIOA
@@ -34,6 +39,7 @@
 #define ENDSTOP_GPIO_PORT GPIOB
 #define ENDSTOP_PIN        GPIO_PIN_9
 
+#if defined(STM32L152xE)
 /* Torque command DAC: DAC_OUT1 (PA4, positive) / DAC_OUT2 (PA5, negative) --
  * two unipolar channels, a downstream differential-input amplifier stage
  * recovers the bipolar result. See Output.c. PA5 requires the LD2
@@ -43,6 +49,16 @@
 #define DAC_OUT1_PIN        GPIO_PIN_4
 #define DAC_OUT2_GPIO_PORT GPIOA
 #define DAC_OUT2_PIN        GPIO_PIN_5
+#else
+/* Torque command PWM (poor-man's DAC): TIM3_CH1 (positive) / TIM3_CH2
+ * (negative), same two-unipolar-channel scheme as the DAC above, just
+ * RC-filtered PWM instead of a real analog output -- F103 has no on-chip
+ * DAC silicon at all. See docs/rc-filter.md and Output.c. */
+#define TORQUE_PWM_POS_GPIO_PORT GPIOA
+#define TORQUE_PWM_POS_PIN        GPIO_PIN_6
+#define TORQUE_PWM_NEG_GPIO_PORT GPIOA
+#define TORQUE_PWM_NEG_PIN        GPIO_PIN_7
+#endif
 
 /* Mode C (analog velocity) input: ADC1 channel for the commanded-velocity
  * magnitude -- see Analog.c/Adc.h. */
@@ -62,31 +78,56 @@
 #define HW_ENABLE_GPIO_PORT GPIOB
 #define HW_ENABLE_PIN        GPIO_PIN_10
 
+#if defined(STM32L152xE)
 /* UART (CLI): USART2, Nucleo-64's ST-Link VCP (PA2/PA3) -- free serial
  * console over the same USB cable used to flash. */
 #define UART_TX_GPIO_PORT GPIOA
 #define UART_TX_PIN        GPIO_PIN_2
 #define UART_RX_GPIO_PORT GPIOA
 #define UART_RX_PIN        GPIO_PIN_3
+#else
+/* UART (CLI): USART1 (PA9/PA10) -- F103 "Blue Pill" has no onboard debugger
+ * with a VCP, needs an external USB-serial adapter. */
+#define UART_TX_GPIO_PORT GPIOA
+#define UART_TX_PIN        GPIO_PIN_9
+#define UART_RX_GPIO_PORT GPIOA
+#define UART_RX_PIN        GPIO_PIN_10
+#endif
 
+#if defined(STM32L152xE)
 /* Onboard LED (LD2), rerouted to PB15 by the DAC_OUT2 solder-bridge rework
  * (see docs/bringup.md) -- active-HIGH. */
 #define LED_GPIO_PORT GPIOB
 #define LED_PIN        GPIO_PIN_15
+#else
+/* Onboard LED (PC13) -- active-LOW (Blue Pill wiring). */
+#define LED_GPIO_PORT GPIOC
+#define LED_PIN        GPIO_PIN_13
+#endif
 
 /* Fault output, open-drain, active-low -- wire-ORed onto a shared fault bus. */
 #define FAULT_OUT_GPIO_PORT GPIOB
 #define FAULT_OUT_PIN        GPIO_PIN_4
 
+#if defined(STM32L152xE)
 /* Debug-only: high for the duration of the 1kHz control-tick ISR body --
  * see docs/architecture.md's CPU headroom section. */
 #define TICK_ACTIVE_GPIO_PORT GPIOC
 #define TICK_ACTIVE_PIN        GPIO_PIN_10
+#else
+#define TICK_ACTIVE_GPIO_PORT GPIOB
+#define TICK_ACTIVE_PIN        GPIO_PIN_15
+#endif
 
+#if defined(STM32L152xE)
 /* Debug-only: high for just the built-in test-signal generator's branch --
  * narrower bracket than TICK_ACTIVE_PIN. */
 #define SIGNAL_BUSY_GPIO_PORT GPIOB
 #define SIGNAL_BUSY_PIN        GPIO_PIN_13
+#else
+#define SIGNAL_BUSY_GPIO_PORT GPIOB
+#define SIGNAL_BUSY_PIN        GPIO_PIN_11
+#endif
 
 /* Hardware "true-zero" clamp: drives an external analog switch that shorts
  * the op-amp's differential input pins together, forcing the analog output
