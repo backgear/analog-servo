@@ -46,6 +46,15 @@ void    AppSetAnalogVelocityConfig(int32_t scaleQ8, int32_t hysteresisCounts) { 
 int32_t AppGetAnalogRawAdc(void) { return 0; }
 int     AppGetAnalogReversed(void) { return 0; }
 int     AppGetHwEnableAsserted(void) { return 1; }
+OutputTopology AppGetOutputTopology(void) { return OUTPUT_TOPOLOGY_ANALOG_TORQUE; }
+int            AppSetOutputTopology(OutputTopology t) { (void)t; return 0; }
+void    AppSetCommutationConfig(int32_t p, int32_t c) { (void)p; (void)c; }
+void    AppCommutationLearn(void) {}
+int     AppCommutationLearnBusy(void) { return 0; }
+int     AppGetCommutationLearnFailed(void) { return 0; }
+void    AppCommutationDetectPoles(int32_t encoderCpr) { (void)encoderCpr; }
+int     AppCommutationDetectPolesBusy(void) { return 0; }
+int     AppGetCommutationDetectPolesFailed(void) { return 0; }
 uint32_t AppGetLastTickCycles(void) { return 0; }
 uint32_t AppGetMaxTickCycles(void) { return 0; }
 int32_t  AppGetLastTickLoadPct(void) { return 0; }
