@@ -1,10 +1,10 @@
 #ifndef MAIN_H
 #define MAIN_H
 
-#if defined(STM32L152xE)
-#include "stm32l1xx_hal.h"
-#else
+#if defined(STM32F103xB)
 #include "stm32f1xx_hal.h"
+#else
+#include "stm32l1xx_hal.h"
 #endif
 #include "ConfigStore.h"
 #include "Fault.h"
