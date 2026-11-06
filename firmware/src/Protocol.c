@@ -158,6 +158,9 @@ static const char *AutotuneMethodName(AutotuneMethod m) {
     default:                  return "relay";
   }
 }
+static const char *OutputTopologyName(OutputTopology t) {
+  return (t == OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG) ? "two_phase_analog" : "analog_torque";
+}
 
 static void getServoMode(char *b, size_t n) { snprintf(b, n, "%s", ServoModeName(AppGetServoMode())); }
 static int  setServoMode(const char *v) {
@@ -314,6 +317,39 @@ static int  setOutputZeroTrim(const char *v) {
   return 0;
 }
 
+/* output.topology/commutation.* -- `two-phase-output` draft-PR branch, see
+ * docs/two-phase-drive.md. Not bench-verified -- needs real Hall-sensor
+ * hardware nobody has yet. */
+static void getOutputTopology(char *b, size_t n) { snprintf(b, n, "%s", OutputTopologyName(AppGetOutputTopology())); }
+static int  setOutputTopology(const char *v) {
+  /* AppSetOutputTopology() rejects two_phase_analog on the default
+   * `analog_servo` build (ANALOG_SERVO_TWO_PHASE_DRIVE not defined) --
+   * see platformio.ini. */
+  if (!strcmp(v, "analog_torque"))    return AppSetOutputTopology(OUTPUT_TOPOLOGY_ANALOG_TORQUE);
+  if (!strcmp(v, "two_phase_analog")) return AppSetOutputTopology(OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG);
+  return -1;
+}
+static void getCommutationPolePairs(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->commutationPolePairs); }
+static int  setCommutationPolePairs(const char *v) {
+  int32_t val;
+  if (ParseI32(v, &val) != 0 || val <= 0) return -1;
+  AppSetCommutationConfig(val, AppGetConfig()->commutationCountsPerElecRev);
+  return 0;
+}
+static void getCommutationCountsPerElecRev(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->commutationCountsPerElecRev); }
+static int  setCommutationCountsPerElecRev(const char *v) {
+  int32_t val;
+  if (ParseI32(v, &val) != 0 || val <= 0) return -1;
+  AppSetCommutationConfig(AppGetConfig()->commutationPolePairs, val);
+  return 0;
+}
+static void getCommutationLearned(char *b, size_t n) { snprintf(b, n, "%d", AppGetConfig()->commutationLearned); }
+static void getCommutationOffsetDeg(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->commutationOffsetDeg); }
+static void getCommutationLearnActive(char *b, size_t n) { snprintf(b, n, "%d", AppCommutationLearnBusy()); }
+static void getCommutationLearnFailed(char *b, size_t n) { snprintf(b, n, "%d", AppGetCommutationLearnFailed()); }
+static void getCommutationDetectPolesActive(char *b, size_t n) { snprintf(b, n, "%d", AppCommutationDetectPolesBusy()); }
+static void getCommutationDetectPolesFailed(char *b, size_t n) { snprintf(b, n, "%d", AppGetCommutationDetectPolesFailed()); }
+
 static void getDiagTickCycles(char *b, size_t n)   { snprintf(b, n, "%lu", (unsigned long)AppGetLastTickCycles()); }
 static void getDiagTickCyclesMax(char *b, size_t n) { snprintf(b, n, "%lu", (unsigned long)AppGetMaxTickCycles()); }
 static void getDiagTickLoadPct(char *b, size_t n)  { snprintf(b, n, "%ld", (long)AppGetLastTickLoadPct()); }
@@ -451,6 +487,11 @@ static int setRlsAggressiveness(const char *v) {
 #define BOOL_META "\"type\":\"bool\",\"unit\":\"boolean\",\"choices\":[\"0\",\"1\"]"
 #define ENUM_META(values) "\"type\":\"enum\",\"unit\":\"name\",\"choices\":[" values "]"
 #define TORQUE_META INT_META("torque_unit") ",\"full_scale\":32767"
+#ifdef ANALOG_SERVO_TWO_PHASE_DRIVE
+#define TOPOLOGY_CHOICES "\"analog_torque\",\"two_phase_analog\""
+#else
+#define TOPOLOGY_CHOICES "\"analog_torque\""
+#endif
 
 static const var_entry_t kVars[] = {
   { "axis.enabled",      getServoEnabled,      setServoEnabled, BOOL_META },
@@ -492,6 +533,15 @@ static const var_entry_t kVars[] = {
   { "torque.sustained_threshold",   getSustainedCurrentMinTorque,   setSustainedCurrentMinTorque, TORQUE_META },
   { "torque.sustained_ticks", getSustainedCurrentWindowTicks, setSustainedCurrentWindowTicks, INT_META("tick") },
   { "output.trim",   getOutputZeroTrim,    setOutputZeroTrim, TORQUE_META },
+  { "output.topology",    getOutputTopology,    setOutputTopology, ENUM_META(TOPOLOGY_CHOICES) },
+  { "commutation.pole_pairs",         getCommutationPolePairs,         setCommutationPolePairs, INT_META("pole_pair") },
+  { "commutation.counts_per_elec_rev", getCommutationCountsPerElecRev, setCommutationCountsPerElecRev, INT_META("encoder_count/electrical_revolution") },
+  { "commutation.learned",      getCommutationLearned,     NULL, BOOL_META },
+  { "commutation.offset_deg",   getCommutationOffsetDeg,   NULL, INT_META("degree") },
+  { "commutation.learn_active", getCommutationLearnActive, NULL, BOOL_META },
+  { "commutation.learn_failed", getCommutationLearnFailed, NULL, BOOL_META },
+  { "commutation.detect_poles_active", getCommutationDetectPolesActive, NULL, BOOL_META },
+  { "commutation.detect_poles_failed", getCommutationDetectPolesFailed, NULL, BOOL_META },
   { "output.polarity_learned",   getPolarityLearned,   NULL, BOOL_META },
   { "output.polarity",      getPolaritySign,      NULL, INT_META("sign") },
   { "output.polarity_failed",      getPolarityLearnFailed,     NULL, BOOL_META },
@@ -681,12 +731,43 @@ static void cmdPosition(int argc, char **argv) {
   if (argc != 2 || strcmp(argv[1], "zero")) { respError("usage: position zero"); return; }
   int result = AppResetPosition();
   if (result == -2) respError("position zero requires disabled, stationary axis with no active test");
+  else if (result == -3) respError("position zero is unavailable with two-phase commutation");
   else if (result != 0) respError("position zero failed");
 }
 
 static void cmdOutput(int argc, char **argv) {
   if (argc != 2 || strcmp(argv[1], "learn_polarity")) { respError("usage: output learn_polarity"); return; }
   AppPolarityLearn(); respKV("state", "learning");
+}
+
+static void cmdCommutation(int argc, char **argv) {
+  static const char *usage = "usage: commutation <learn | detect_poles <encoder_cpr>>";
+  if (argc < 2) { respError(usage); return; }
+  if (!strcmp(argv[1], "learn")) {
+    if (AppGetOutputTopology() != OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG) {
+      respError("requires output.topology=two_phase_analog");
+      return;
+    }
+    AppCommutationLearn();
+    respKV("state", "learning");
+    return;
+  }
+  if (!strcmp(argv[1], "detect_poles")) {
+    if (AppGetOutputTopology() != OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG) {
+      respError("requires output.topology=two_phase_analog");
+      return;
+    }
+    if (argc < 3) { respError(usage); return; }
+    int32_t encoderCpr;
+    if (ParseI32(argv[2], &encoderCpr) != 0 || encoderCpr <= 0) {
+      respError("invalid encoder_cpr");
+      return;
+    }
+    AppCommutationDetectPoles(encoderCpr);
+    respKV("state", "detecting");
+    return;
+  }
+  respError(usage);
 }
 
 static void cmdSignal(int argc, char **argv) {
@@ -871,6 +952,8 @@ static const cmd_t kCommands[] = {
   { "fault",    cmdFault,    "<clear|freeze> -- clear a latched hard fault, or dump the freeze frame" },
   { "position", cmdPosition, "zero -- reset coordinates while disabled and stationary" },
   { "output", cmdOutput, "learn_polarity -- one-time polarity commissioning step" },
+  { "commutation", cmdCommutation,
+    "<learn | detect_poles <encoder_cpr>> -- alignment commissioning / pole-count detection (two_phase_analog only)" },
   { "test",     cmdSignal,   "<impulse <amp> | square <torque|position> <amp> <half_period_ticks> [duration] | stop>" },
   { "monitor",  cmdMonitor,  "<start|stop|dump|schema> -- toggle the channel-1 binary telemetry stream, dump recorded history to it, or print its frame schema as JSON" },
   { "autotune", cmdAutotune,

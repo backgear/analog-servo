@@ -18,8 +18,36 @@
  * torqueClampMin/Max range) -- 0 maps to both channels at their own zero. */
 #define TORQUE_FULL_SCALE 32767
 
+/* output.topology -- see docs/two-phase-drive.md, ported wholesale on the
+ * `two-phase-output` draft-PR branch (NOT compiled into the default
+ * `analog_servo` env -- see platformio.ini's `analog_servo_two_phase` env
+ * and the ANALOG_SERVO_TWO_PHASE_DRIVE flag that gates it). Affects ONLY
+ * OutputForceSafe()'s "what is zero on this channel pair" semantics below;
+ * callers (main.c) still pick OutputSetTorqueCommand() vs.
+ * OutputSetTwoPhaseCommand() themselves based on the same setting. */
+typedef enum {
+  OUTPUT_TOPOLOGY_ANALOG_TORQUE = 0,       /* default -- the only topology in `main` */
+  OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG = 1,    /* see OutputSetTwoPhaseCommand() */
+} OutputTopology;
+void OutputSetTopology(OutputTopology topology);
+
 void OutputInit(void);
 void OutputSetTorqueCommand(int32_t torqueCommandQ);
+
+/* output.topology=two_phase_analog's write path: two independent
+ * sinusoidal phase commands (Commutation.c's CommutationComputePhases()),
+ * each +-TORQUE_FULL_SCALE, written to the SAME two DAC channels
+ * OutputSetTorqueCommand() uses -- not a third/fourth channel. Each
+ * channel carries pure unsigned magnitude; sign is written separately to
+ * gpio.h's PHASE_A_SIGN_PIN/PHASE_B_SIGN_PIN, each driving an external
+ * analog switch (a CD4053) that routes that phase's magnitude signal onto
+ * the drive's + or - differential terminal (ground on the other) -- no
+ * external reference needed at all. A real board modification, not yet
+ * built or bench-verified on any board -- see docs/two-phase-drive.md for
+ * the switch wiring and the alternatives it replaced. L152-only for now --
+ * see docs/two-phase-drive.md's own scope note; F103's PWM+RC output stage
+ * doesn't implement this topology. */
+void OutputSetTwoPhaseCommand(int32_t ia, int32_t ib);
 
 /* Signed offset, in the same raw torque units as OutputSetTorqueCommand()
  * (+-TORQUE_FULL_SCALE), added to the commanded torque before it's scaled to

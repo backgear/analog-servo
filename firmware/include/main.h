@@ -16,6 +16,7 @@
 #include "Signal.h"
 #include "Autotune.h"
 #include "RLS.h"
+#include "Output.h"   /* OutputTopology -- see AppGetOutputTopology() below */
 
 void Error_Handler(void);
 void SystemClock_Config(void);
@@ -36,6 +37,24 @@ int       AppSetServoMode(ServoMode mode);
 int  AppGetEnabled(void);
 void AppSetEnabled(int enabled);   /* enabling clears Control.c's integrator; does NOT
                                        auto-clear a latched fault */
+
+/* output.topology (`two-phase-output` draft-PR branch) -- see Output.h and
+ * docs/two-phase-drive.md. Independent of ServoMode: any mode can pair with
+ * either topology. */
+OutputTopology AppGetOutputTopology(void);
+int  AppSetOutputTopology(OutputTopology topology);
+void AppSetCommutationConfig(int32_t polePairs, int32_t countsPerElecRev);
+
+/* One-time bench/commissioning steps for output.topology=two_phase_analog --
+ * same "non-blocking, don't silently persist a bad result" shape as
+ * AppPolarityLearn() below. Both are no-ops (always idle/failed) unless
+ * output.topology is already two_phase_analog. */
+void AppCommutationLearn(void);
+int  AppCommutationLearnBusy(void);
+int  AppGetCommutationLearnFailed(void);
+void AppCommutationDetectPoles(int32_t encoderCpr);
+int  AppCommutationDetectPolesBusy(void);
+int  AppGetCommutationDetectPolesFailed(void);
 
 /* Mode B (velocity command) input -- host-commanded velocity target, ramped
  * by Ramp.c before feeding the shared Control.c cascade. Counts/tick. Also
