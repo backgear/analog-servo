@@ -1,10 +1,15 @@
 #ifndef MAIN_H
 #define MAIN_H
 
-#if defined(STM32F103xB)
-#include "stm32f1xx_hal.h"
-#else
+#if defined(STM32L152xE)
 #include "stm32l1xx_hal.h"
+#elif defined(STM32F103xB)
+#include "stm32f1xx_hal.h"
+#elif defined(ANALOG_SERVO_NATIVE_TEST)
+#include "stm32l1xx_hal.h"   /* host tests build against the L1-shaped mock
+                               * in test/mocks/, regardless of target board */
+#else
+#error "main.h: no known MCU family macro defined -- see platformio.ini's build_flags (STM32L152xE / STM32F103xB / ANALOG_SERVO_NATIVE_TEST)"
 #endif
 #include "ConfigStore.h"
 #include "Fault.h"
