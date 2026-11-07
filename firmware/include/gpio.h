@@ -75,8 +75,16 @@
  * ramps the commanded velocity to zero (Mode B/C) or freezes the
  * step-derived target (Mode A) -- see docs/bringup.md. Deliberately NOT the
  * same as axis.enabled=0 or a latched fault. */
+#if defined(STM32L152xE)
 #define HW_ENABLE_GPIO_PORT GPIOB
 #define HW_ENABLE_PIN        GPIO_PIN_10
+#else
+/* F103: moved off PB10 to free PB10/PB11 (USART3 TX/RX) for Tamagawa
+ * feedback bring-up, same relocation the tamagawa-feedback branch made
+ * for L152 -- not ported here, just keeping the pin free for it. */
+#define HW_ENABLE_GPIO_PORT GPIOB
+#define HW_ENABLE_PIN        GPIO_PIN_12
+#endif
 
 #if defined(STM32L152xE)
 /* UART (CLI): USART2, Nucleo-64's ST-Link VCP (PA2/PA3) -- free serial
@@ -119,15 +127,11 @@
 #define TICK_ACTIVE_PIN        GPIO_PIN_15
 #endif
 
-#if defined(STM32L152xE)
 /* Debug-only: high for just the built-in test-signal generator's branch --
- * narrower bracket than TICK_ACTIVE_PIN. */
+ * narrower bracket than TICK_ACTIVE_PIN. Same pin on both boards -- F103
+ * moved off PB11 to free PB10/PB11 (USART3) for Tamagawa feedback. */
 #define SIGNAL_BUSY_GPIO_PORT GPIOB
 #define SIGNAL_BUSY_PIN        GPIO_PIN_13
-#else
-#define SIGNAL_BUSY_GPIO_PORT GPIOB
-#define SIGNAL_BUSY_PIN        GPIO_PIN_11
-#endif
 
 /* Hardware "true-zero" clamp: drives an external analog switch that shorts
  * the op-amp's differential input pins together, forcing the analog output
