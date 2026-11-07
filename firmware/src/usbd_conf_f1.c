@@ -4,8 +4,11 @@
  * (not the OTG core F4/L4 use), so HAL_PCD_* is essentially unchanged
  * across the two. Difference: F103 has CAN, so the shared vector is
  * USB_LP_CAN1_RX0_IRQn, not L152's USB_LP_IRQn (see stm32f1xx_it.c); and
- * F103's USB D+ pull-up is baked into the peripheral's own power-up
- * sequence automatically, unlike L152's separate SYSCFG->PMC bit.
+ * F103 has no software-switchable D+ pull-up at all (unlike L152's
+ * separate SYSCFG->PMC bit) -- real F103 boards (this one confirmed, a
+ * genuine "Blue Pill") use a fixed external resistor instead, which is
+ * exactly why UsbSoftDisconnect() below exists: nothing else can force a
+ * real re-enumeration on this hardware.
  */
 #include "usbd_conf.h"
 #include "usbd_core.h"
@@ -58,7 +61,37 @@ void HAL_PCD_DisconnectCallback(PCD_HandleTypeDef *hpcd) {
 }
 
 /* ---- USBD_LL_* : bridge to HAL_PCD_* -------------------------------------- */
+
+/* This board (genuine "Blue Pill") has a FIXED 1.5K pull-up on PA12 (R10) --
+ * not software-switchable the way some other F1xx USB designs are. That
+ * means a warm reset (e.g. over SWD, with no real cable unplug) never
+ * toggles D+ electrically, so the host never sees a disconnect: its view
+ * of the device's USB endpoints (data-toggle state etc.) goes stale
+ * relative to the just-reset device, and the connection silently stops
+ * working until a real cable replug forces fresh enumeration. Confirmed
+ * on real hardware -- this isn't hypothetical.
+ *
+ * Force a real disconnect/reconnect ourselves: drive D+ low for a moment
+ * before the USB peripheral takes over the pin, then release it back to
+ * floating so HAL_PCD_Init()/Start() (right after this returns) bring the
+ * peripheral up exactly as they would at a true cold boot. */
+static void UsbSoftDisconnect(void) {
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  GPIO_InitTypeDef g = {0};
+  g.Pin   = GPIO_PIN_12;
+  g.Mode  = GPIO_MODE_OUTPUT_PP;
+  g.Pull  = GPIO_NOPULL;
+  g.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &g);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_12, GPIO_PIN_RESET);
+  HAL_Delay(50);
+  g.Mode = GPIO_MODE_INPUT;
+  HAL_GPIO_Init(GPIOA, &g);
+}
+
 USBD_StatusTypeDef USBD_LL_Init(USBD_HandleTypeDef *pdev) {
+  UsbSoftDisconnect();
+
   hpcd_USB_FS.pData = pdev;
   pdev->pData = &hpcd_USB_FS;
 
