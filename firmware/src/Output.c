@@ -23,11 +23,11 @@
 #include "gpio.h"
 #include "tim.h"
 
-/* Signed offset added before OutputSplit() -- see OutputSetZeroTrim(). DAC
- * codes on L152, PWM duty codes on F103. */
-static int32_t sZeroTrimCounts = 0;
+/* Signed offset added to the commanded torque before scaling -- see
+ * OutputSetZeroTrim(). Raw torque units, same scale on both boards. */
+static int32_t sZeroTrim = 0;
 
-void OutputSetZeroTrim(int32_t trimCounts) { sZeroTrimCounts = trimCounts; }
+void OutputSetZeroTrim(int32_t trimTorqueUnits) { sZeroTrim = trimTorqueUnits; }
 
 /* Clamp a signed value to +-max, then split its sign onto two unipolar
  * outputs. */
@@ -43,7 +43,7 @@ static DAC_HandleTypeDef sHdac;
 
 static void OutputWriteDac(int32_t torqueCommandQ) {
   /* Full 12-bit range per channel (0..4095), unipolar -- see OutputSplit(). */
-  int32_t raw = sZeroTrimCounts + (torqueCommandQ * 4095) / TORQUE_FULL_SCALE;
+  int32_t raw = (torqueCommandQ * 4095) / TORQUE_FULL_SCALE;
   int32_t pos, neg;
   OutputSplit(raw, 4095, &pos, &neg);
   HAL_DAC_SetValue(&sHdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, (uint32_t)pos);
@@ -66,6 +66,7 @@ void OutputInit(void) {
 
 void OutputSetTorqueCommand(int32_t torqueCommandQ) {
   ZeroClampWrite(0);   /* normal operation -- release the hardware clamp */
+  torqueCommandQ += sZeroTrim;
   if (torqueCommandQ > TORQUE_FULL_SCALE) torqueCommandQ = TORQUE_FULL_SCALE;
   if (torqueCommandQ < -TORQUE_FULL_SCALE) torqueCommandQ = -TORQUE_FULL_SCALE;
   OutputWriteDac(torqueCommandQ);
@@ -79,7 +80,7 @@ void OutputForceSafe(void) {
 static void OutputWritePwm(int32_t torqueCommandQ) {
   /* Full [0, TIM3_PWM_ARR] range per channel, unipolar -- see OutputSplit(). */
   int32_t max = (int32_t)TIM3_PWM_ARR;
-  int32_t raw = sZeroTrimCounts + (torqueCommandQ * max) / TORQUE_FULL_SCALE;
+  int32_t raw = (torqueCommandQ * max) / TORQUE_FULL_SCALE;
   int32_t pos, neg;
   OutputSplit(raw, max, &pos, &neg);
   Tim3PwmSetDuty((uint32_t)pos, (uint32_t)neg);
@@ -92,6 +93,7 @@ void OutputInit(void) {
 
 void OutputSetTorqueCommand(int32_t torqueCommandQ) {
   ZeroClampWrite(0);   /* normal operation -- release the hardware clamp */
+  torqueCommandQ += sZeroTrim;
   if (torqueCommandQ > TORQUE_FULL_SCALE) torqueCommandQ = TORQUE_FULL_SCALE;
   if (torqueCommandQ < -TORQUE_FULL_SCALE) torqueCommandQ = -TORQUE_FULL_SCALE;
   OutputWritePwm(torqueCommandQ);

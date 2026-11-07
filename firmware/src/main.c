@@ -165,7 +165,7 @@ static void ApplyConfigToModules(void) {
   ControlSetGains(&gains);
   FaultSetFollowingErrorConfig(sConfig.followingErrorLimitCounts, sConfig.followingErrorHardFault);
   FaultSetSustainedCurrentConfig(sConfig.sustainedCurrentMinTorque, sConfig.sustainedCurrentWindowTicks);
-  OutputSetZeroTrim(sConfig.zeroTrimCounts);
+  OutputSetZeroTrim(sConfig.zeroTrim);
   AnalogVelocitySetConfig(sConfig.analogVelocityScaleQ8, sConfig.analogVelocityHysteresisCounts);
   RampSetAcceleration(&sRamp, sConfig.rampAccelCountsPerTickPerSec);
   RampSetJerk(&sRamp, sConfig.velocityJerk);
@@ -289,8 +289,8 @@ void AppSetRampAccel(int32_t accelCountsPerTickPerSec) {
   sConfig.rampAccelCountsPerTickPerSec = accelCountsPerTickPerSec;
   ApplyConfigToModules();
 }
-void AppSetZeroTrim(int32_t trimCounts) {
-  sConfig.zeroTrimCounts = trimCounts;
+void AppSetZeroTrim(int32_t trimTorqueUnits) {
+  sConfig.zeroTrim = trimTorqueUnits;
   ApplyConfigToModules();
 }
 void AppSetAnalogVelocityConfig(int32_t scaleQ8, int32_t hysteresisCounts) {

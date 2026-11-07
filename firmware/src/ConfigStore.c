@@ -24,7 +24,7 @@
 /* Record layout version. Starts at 1 (never 0 or 0xFF -- those collide with
  * zeroed/erased flash). No migration: an old-version record is rejected and
  * defaults apply -- see AGENTS.md. Bump this on any field-layout change. */
-#define CONFIG_FLASH_VERSION   1U
+#define CONFIG_FLASH_VERSION   2U
 
 /* Fixed, padded record size -- a new field consumes reserved padding in
  * place, so this never needs to grow for a small addition. */
@@ -43,7 +43,7 @@ typedef struct {
   int8_t   polaritySign;
   uint8_t  enabled;
   uint8_t  _pad[2];
-  int32_t  zeroTrimCounts;
+  int32_t  zeroTrim;
   int32_t  analogVelocityScaleQ8;
   int32_t  analogVelocityHysteresisCounts;
   int32_t  sustainedCurrentMinTorque;
@@ -107,7 +107,7 @@ void ConfigDataSetDefaults(ConfigData *cfg) {
   cfg->followingErrorLimitCounts = 0; /* 0 == disabled until configured */
   cfg->polarityLearned = 0;
   cfg->polaritySign = 1;
-  cfg->zeroTrimCounts = 0;            /* just defaulting to zero -- tune on the bench */
+  cfg->zeroTrim = 0;                  /* just defaulting to zero -- tune on the bench */
   cfg->analogVelocityScaleQ8 = CONFIG_DEFAULT_ANALOG_SCALE_Q8;
   cfg->analogVelocityHysteresisCounts = CONFIG_DEFAULT_ANALOG_HYSTERESIS_COUNTS;
   cfg->sustainedCurrentMinTorque = TORQUE_FULL_SCALE / 10;   /* 10% -- see Fault.h */
@@ -136,7 +136,7 @@ int ConfigStoreSave(const ConfigData *cfg) {
   rec.positionMoveFeedforwardQ8 = cfg->positionMoveFeedforwardQ8;
   rec.followingErrorLimitCounts = cfg->followingErrorLimitCounts;
   rec.polaritySign = cfg->polaritySign;
-  rec.zeroTrimCounts = cfg->zeroTrimCounts;
+  rec.zeroTrim = cfg->zeroTrim;
   rec.analogVelocityScaleQ8 = cfg->analogVelocityScaleQ8;
   rec.analogVelocityHysteresisCounts = cfg->analogVelocityHysteresisCounts;
   rec.sustainedCurrentMinTorque = cfg->sustainedCurrentMinTorque;
@@ -196,7 +196,7 @@ int ConfigStoreLoad(ConfigData *out) {
   out->followingErrorLimitCounts = rec->followingErrorLimitCounts;
   out->polarityLearned = rec->polarityLearned;
   out->polaritySign = rec->polaritySign;
-  out->zeroTrimCounts = rec->zeroTrimCounts;
+  out->zeroTrim = rec->zeroTrim;
   out->analogVelocityScaleQ8 = rec->analogVelocityScaleQ8;
   out->analogVelocityHysteresisCounts = rec->analogVelocityHysteresisCounts;
   out->sustainedCurrentMinTorque = rec->sustainedCurrentMinTorque;

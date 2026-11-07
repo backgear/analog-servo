@@ -21,12 +21,16 @@
 void OutputInit(void);
 void OutputSetTorqueCommand(int32_t torqueCommandQ);
 
-/* Signed offset added (DAC codes) to the effective signed value before it's
- * split across the positive/negative channels, correcting residual
- * analog-stage zero error (DAC/differential-amp input offset) that the
- * digital math alone can't know about. Defaults to 0; persisted via
- * ConfigStore, set over the protocol as `output.trim`. */
-void OutputSetZeroTrim(int32_t trimCounts);
+/* Signed offset, in the same raw torque units as OutputSetTorqueCommand()
+ * (+-TORQUE_FULL_SCALE), added to the commanded torque before it's scaled to
+ * DAC/PWM codes and split across the positive/negative channels -- correcting
+ * residual analog-stage zero error (DAC/differential-amp input offset) that
+ * the digital math alone can't know about. Torque units rather than raw
+ * DAC/PWM codes so the same configured value means the same thing on either
+ * board, despite L152's 12-bit DAC and F103's PWM having different native
+ * ranges. Defaults to 0; persisted via ConfigStore, set over the protocol as
+ * `output.trim`. */
+void OutputSetZeroTrim(int32_t trimTorqueUnits);
 
 /* Immediate zero/safe -- called by Fault.c the instant any hard fault
  * latches, and every tick thereafter while latched. */

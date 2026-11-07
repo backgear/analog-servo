@@ -64,9 +64,11 @@ typedef struct {
   int32_t followingErrorLimitCounts;
   uint8_t polarityLearned;
   int8_t  polaritySign;               /* +1 or -1, applied before OutputSetTorqueCommand */
-  int32_t zeroTrimCounts;             /* signed offset added before the positive/negative
-                                          channel split, to correct residual analog-stage
-                                          zero error; defaults to 0, tune on the bench */
+  int32_t zeroTrim;                   /* signed offset, raw torque units, added to the
+                                          commanded torque before it's scaled/split across
+                                          the positive/negative channels, to correct residual
+                                          analog-stage zero error; defaults to 0, tune on the
+                                          bench -- see Output.h's OutputSetZeroTrim() */
   int32_t analogVelocityScaleQ8;        /* Mode C: raw ADC code -> velocity counts/tick,
                                             Q8.8 -- see Analog.h */
   int32_t analogVelocityHysteresisCounts; /* Mode C: raw ADC LSBs of hysteresis, see
