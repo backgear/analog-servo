@@ -10,7 +10,7 @@ FRAME_LEN = 28   # was 20 before commandedPosition/commandedVelocity (2x int32) 
 SYNC_BYTE = 0xAA
 STRUCT_FMT = "<BIiiiiiBBB"
 
-MODE_NAMES = ("stepdir", "velocity", "analog")
+MODE_NAMES = ("stepdir", "host", "analog")
 FAULT_REASON_NAMES = ("none", "polarity", "zero_encoder", "endstop", "following_error", "sustained_current")
 
 
