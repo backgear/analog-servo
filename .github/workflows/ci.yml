@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read   # least-privilege GITHUB_TOKEN
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Run native unit tests
+        run: pio test -d firmware -e native
+
+      - name: Build firmware (NUCLEO-L152RE)
+        run: pio run -d firmware -e analog_servo
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: |
+            firmware/.pio/build/analog_servo/firmware.elf
+            firmware/.pio/build/analog_servo/firmware.bin
+          if-no-files-found: error

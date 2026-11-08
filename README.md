@@ -10,6 +10,8 @@ This project is aimed at people that want to tinker, learn, and either
 keep old servos out of the landfill or try out topologies that might not
 be well-supported by existing manufacturers.
 
+![Bench telemetry: a sharp position step and a triangular velocity ramp, commanded vs. actual](assets/telemetry-demo.png)
+
 **Q: Is this going to produce better results than a Teknic Clearpath?**
 A: No, almost certainly not.
 
