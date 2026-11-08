@@ -1,0 +1,10 @@
+.pio/
+.cache/
+compile_commands.json
+__pycache__/
+*.pyc
+
+# docs/ is written but not yet part of a published version -- see
+# AGENTS.md's Documentation convention. Remove this line (and run
+# `git add docs/`) once it's ready to ship.
+docs/

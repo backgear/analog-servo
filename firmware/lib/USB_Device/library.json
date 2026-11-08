@@ -1,0 +1,12 @@
+{
+  "name": "STM32_USB_Device_Library-CDC",
+  "version": "1.11.3",
+  "description": "USB Device middleware (Core + CDC class), vendored from STM32Cube FW_F1 via platformio/framework-stm32cubef1@1.8.6. Requires usbd_conf.h/usbd_desc.h/usbd_cdc_if.h from the project include/ directory (same pattern as FreeRTOSConfig.h for app/lib/FreeRTOS).",
+  "keywords": "usb, cdc, stm32",
+  "license": "custom (ST middleware license, see file headers)",
+  "frameworks": ["stm32cube"],
+  "platforms": ["ststm32"],
+  "build": {
+    "libArchive": false
+  }
+}
