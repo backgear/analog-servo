@@ -18,8 +18,12 @@ def main():
     ap.add_argument('captures', nargs='+')
     ap.add_argument('--out', required=True, help='output filename prefix')
     ap.add_argument('--nperseg', type=int, default=512)
+    ap.add_argument('--min-frequency', type=float, default=2)
+    ap.add_argument('--max-frequency', type=float, default=250)
     ap.add_argument('--polarity', type=int, choices=[-1, 1], required=True)
     args = ap.parse_args()
+    if not 0 < args.min_frequency < args.max_frequency <= 500:
+        ap.error('require 0 < min frequency < max frequency <= 500 Hz')
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -43,7 +47,7 @@ def main():
             label += ' [incomplete/unverified]'
         f, h = result['frequency'], result['response']
         ci, cy = result['coherence_input'], result['coherence_motion']
-        good = (ci >= .8) & (cy >= .8) & (f > 0) & (f <= 250)
+        good = (ci >= .8) & (cy >= .8) & (f > 0) & (f <= args.max_frequency)
         if not complete or result['windows'] < 8:
             good[:] = False
         color = f'C{index}'
@@ -86,10 +90,10 @@ def main():
     axes[0].set_xlabel('Time (s)')
     axes[0].legend(fontsize=8)
     axes[2].set_yscale('log')
-    axes[1].set_xlim(0, 250)
+    axes[1].set_xlim(0, args.max_frequency)
     axes[1].set_xlabel('Frequency (Hz)')
     for axis in axes[2:]:
-        axis.set_xlim(2, 250)
+        axis.set_xlim(args.min_frequency, args.max_frequency)
         axis.set_xlabel('Frequency (Hz)')
     axes[4].set_ylim(0, 1.05)
     axes[4].axhline(.8, color='gray', linestyle=':')
