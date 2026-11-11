@@ -414,6 +414,22 @@ static void test_two_sample_p_average_has_finite_support(void) {
   }
 }
 
+static void test_p_average_all_windows_preserve_fractional_samples(void) {
+  ControlGains g=*ControlGetGains();
+  g.velGainKpQ8=65536;g.velGainKiQ8=0;g.velocityErrorDeadbandCounts=0;
+  for (int shift=0;shift<=4;shift++) {
+    g.velocityFilterShift=shift;
+    int window=1<<shift;
+    for (int sign=-1;sign<=1;sign+=2) {
+      ControlInit(&g);ControlVelocityTick(0,0,1000);
+      TEST_ASSERT_EQUAL_INT32(-sign*256/window,ControlVelocityTick(0,sign,1000));
+      for (int i=1;i<window;i++)
+        TEST_ASSERT_EQUAL_INT32(-sign*256/window,ControlVelocityTick(0,0,1000));
+      TEST_ASSERT_EQUAL_INT32(0,ControlVelocityTick(0,0,1000));
+    }
+  }
+}
+
 static void test_p_average_hot_changes_use_recent_history(void) {
   ControlGains g=*ControlGetGains();
   g.velGainKpQ8=256;g.velGainKiQ8=0;g.velocityFilterShift=0;
@@ -578,6 +594,7 @@ int main(void) {
   RUN_TEST(test_filtered_p_antiwindup_uses_raw_integral_error);
   RUN_TEST(test_two_sample_p_average_has_finite_support);
   RUN_TEST(test_p_average_hot_changes_use_recent_history);
+  RUN_TEST(test_p_average_all_windows_preserve_fractional_samples);
   RUN_TEST(test_velocity_feedforward_tracks_without_position_lag);
   RUN_TEST(test_feedforward_adds_feedback_and_clamps_total);
   RUN_TEST(test_step_response_converges);
