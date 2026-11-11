@@ -23,6 +23,7 @@
 #include "Adc.h"
 #include "Fault.h"
 #include "Signal.h"
+#include "Excitation.h"
 #include "Polarity.h"
 #include "Indicator.h"
 #include "ConfigStore.h"
@@ -899,6 +900,23 @@ void AppControlTick(void) {
     sPositionTargetAccum = EncoderGetPositionCounts();
   }
 
+  /* Independently recorded additive excitation, never a raw-output bypass.
+   * The normal holding target and all fault checks remain in force. */
+  int32_t injected = ExcitationTick(EncoderGetPositionCounts(), velocityActual,
+      sEnabled && hwEnableAsserted && !FaultIsLatched() &&
+      !sLearningActive && !AppAutotuneBusy() && !SignalIsActive() &&
+      sMode == SERVO_MODE_VELOCITY && sCommandedVelocity == 0 &&
+      !PositionMoveIsActive(&sPositionMove));
+  if (ExcitationSample()) {
+    int sign = sConfig.polarityLearned ? sConfig.polaritySign : 1;
+    int64_t total = (int64_t)torqueCommand * sign + injected;
+    if (total < sConfig.torqueClampMin || total > sConfig.torqueClampMax) {
+      ExcitationRejectClipping();
+    } else {
+      torqueCommand = (int32_t)total * sign;
+    }
+  }
+
   /* Following error is only meaningful when Control.c's cascade actually ran
    * this tick: the normal enabled path, or a SIGNAL_TARGET_POSITION signal. */
   int useRealPositionError = (sEnabled && !sLearningActive &&
@@ -953,6 +971,7 @@ void AppControlTick(void) {
 #ifdef ANALOG_SERVO_HAS_AUTOTUNE
     AutotuneStop();   /* ditto for an in-progress autotune */
 #endif
+    ExcitationRejectClipping(); /* no injection was applied on this fault tick */
     OutputForceSafe();
     IndicatorSetState(INDICATOR_FAULT);
     sLastTorqueCommand = 0;

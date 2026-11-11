@@ -17,6 +17,7 @@
 #include "Encoder.h"
 #include "Fault.h"
 #include "Monitor.h"
+#include "Excitation.h"
 #include "usart.h"
 #include "usbd_cdc_composite_if.h"
 
@@ -430,6 +431,8 @@ static void getPolarityLastMovedCounts(char *b, size_t n) { TinyFormat(b, n, "%l
 
 static void getEncoderZSeen(char *b, size_t n) { TinyFormat(b, n, "%d", EncoderZWasSeenSinceEnable()); }
 
+static void getExcitationActive(char *b, size_t n) { TinyFormat(b, n, "%d", ExcitationActive()); }
+static void getExcitationResult(char *b, size_t n) { TinyFormat(b, n, "%d", ExcitationResult()); }
 static void getSignalActive(char *b, size_t n) { TinyFormat(b, n, "%d", AppGetSignalActive()); }
 static void getSignalType(char *b, size_t n)   { TinyFormat(b, n, "%s", SignalTypeName(AppGetSignalType())); }
 static void getSignalTarget(char *b, size_t n) { TinyFormat(b, n, "%s", SignalTargetName(AppGetSignalTarget())); }
@@ -574,6 +577,8 @@ static const var_entry_t kVars[] = {
   { "encoder.index_seen",     getEncoderZSeen,      NULL, BOOL_META },
   { "fault.latched",      getFaultLatched,      NULL, BOOL_META },
   { "fault.reason",       getFaultReason,       NULL, ENUM_META(FAULT_REASON_NAMES_JSON) },
+  { "excite.active", getExcitationActive, NULL, BOOL_META },
+  { "excite.result", getExcitationResult, NULL, UINT_META("reason_code") },
   { "test.active",      getSignalActive,      NULL, BOOL_META },
   { "test.type",        getSignalType,        NULL, ENUM_META("\"none\",\"impulse\",\"square\"") },
   { "test.target",      getSignalTarget,      NULL, ENUM_META("\"torque\",\"position\"") },
@@ -833,6 +838,33 @@ static void cmdSignal(int argc, char **argv) {
 #define RLS_DEFAULT_GLIDE_MS  2000U  /* ~2s -- "resolves to delightful" should be felt, not
                                          instant; bench-TBD, not finalized */
 
+static void cmdExcite(int argc, char **argv) {
+  if (argc == 2 && !strcmp(argv[1], "stop")) {
+    ExcitationStop(3); respKV("state", "stopped"); return;
+  }
+  if (argc != 7 || strcmp(argv[1], "start")) {
+    respError("usage: excite start <amp> <hold_ticks> <duration_ticks> <travel_counts> <speed_counts_per_tick> | stop"); return;
+  }
+  int32_t amp, travel, speed;
+  uint32_t hold, duration;
+  if (ParseI32(argv[2], &amp) || ParseU32(argv[3], &hold) ||
+      ParseU32(argv[4], &duration) || ParseI32(argv[5], &travel) || ParseI32(argv[6], &speed)) {
+    respError("invalid excitation parameters"); return;
+  }
+  if (!AppGetEnabled() || !AppGetHwEnableAsserted() || FaultIsLatched() ||
+      AppGetServoMode() != SERVO_MODE_VELOCITY || AppGetCommandedVelocity() != 0 ||
+      AppPolarityLearnBusy() || AppAutotuneBusy() || AppGetSignalActive() ||
+      AppGetLastVelocityActual() != 0 ||
+      (int64_t)AppGetConfig()->torqueClampMax < amp ||
+      (int64_t)AppGetConfig()->torqueClampMin > -(int64_t)amp) {
+    respError("excitation requires stationary enabled host hold, no test/fault, and sufficient clamp headroom"); return;
+  }
+  if (ExcitationStart(amp, hold, duration, travel, speed, EncoderGetPositionCounts())) {
+    respError("invalid bounds, duration must be a multiple of 2*hold, or already running"); return;
+  }
+  respKV("state", "running");
+}
+
 static void cmdAutotuneStart(int argc, char **argv) {
   static const char *usage =
       "usage: autotune start relay <amplitude> [max_ticks] | start rls [lambda_q8] [glide_ms]";
@@ -989,6 +1021,7 @@ static const cmd_t kCommands[] = {
   { "autotune", cmdAutotune,
     "<start relay <amp> [max_ticks] | start rls [lambda_q8] [glide_ms] | stop | apply>" },
 #endif
+  { "excite", cmdExcite, "<start <amp> <hold_ticks> <duration_ticks> <travel_counts> <speed_counts_per_tick> | stop>" },
   { "config",   cmdConfig,   "<save|load|defaults> -- flash config persistence" },
   { NULL, NULL, NULL },
 };
@@ -999,6 +1032,11 @@ static void Dispatch(char *line) {
   char *p = strtok(line, " \t");
   while (p && argc < 8) { argv[argc++] = p; p = strtok(NULL, " \t"); }
   if (argc == 0) return;   /* blank line: no-op */
+  if (ExcitationActive() && strcmp(argv[0], "excite") && strcmp(argv[0], "disable") &&
+      strcmp(argv[0], "get") && strcmp(argv[0], "settings") && strcmp(argv[0], "status") &&
+      strcmp(argv[0], "sample") && strcmp(argv[0], "monitor")) {
+    respError("stop excitation before changing controller state"); respEnd(); return;
+  }
 
   for (const cmd_t *c = kCommands; c->name; c++) {
     if (!strcmp(argv[0], c->name)) { c->fn(argc, argv); respEnd(); return; }

@@ -5,6 +5,8 @@
  */
 #include <unity.h>
 #include "Signal.h"
+#include "Excitation.h"
+#include <limits.h>
 #include "Control.h"
 #include "main.h"
 #include "Encoder.h"
@@ -327,8 +329,55 @@ static void test_start_replaces_running_signal(void) {
   TEST_ASSERT_FALSE(SignalIsActive());
 }
 
+static void test_excitation_balanced_and_repeatable(void) {
+  int32_t first[40];
+  ExcitationStop(3);
+  TEST_ASSERT_EQUAL(0, ExcitationStart(100, 5, 40, 200, 8, 0));
+  for (int i = 0; i < 40; i++) {
+    first[i] = ExcitationTick(0, 0, 1);
+    TEST_ASSERT_TRUE(ExcitationSample());
+    TEST_ASSERT_EQUAL(100, first[i] < 0 ? -first[i] : first[i]);
+    if (i % 10 == 9) {
+      int sum = 0;
+      for (int j = i - 9; j <= i; j++) sum += first[j];
+      TEST_ASSERT_EQUAL(0, sum);
+    }
+  }
+  TEST_ASSERT_EQUAL(0, ExcitationTick(0, 0, 1));
+  TEST_ASSERT_FALSE(ExcitationSample());
+  TEST_ASSERT_EQUAL(2, ExcitationResult());
+  TEST_ASSERT_EQUAL(0, ExcitationStart(100, 5, 40, 200, 8, 0));
+  for (int i = 0; i < 40; i++) TEST_ASSERT_EQUAL(first[i], ExcitationTick(0, 0, 1));
+  ExcitationStop(3);
+}
+static void test_excitation_bounds_and_guards(void) {
+  ExcitationStop(3);
+  TEST_ASSERT_EQUAL(-1, ExcitationStart(INT_MIN, 5, 40, 200, 8, 0));
+  TEST_ASSERT_EQUAL(-1, ExcitationStart(100, UINT_MAX, 40, 200, 8, 0));
+  TEST_ASSERT_EQUAL(-1, ExcitationStart(100, 5, 0, 200, 8, 0));
+  TEST_ASSERT_EQUAL(-1, ExcitationStart(100, 5, 41, 200, 8, 0));
+  TEST_ASSERT_EQUAL(0, ExcitationStart(100, 5, 40, 200, 8, INT_MIN));
+  TEST_ASSERT_EQUAL(0, ExcitationTick(INT_MAX, 0, 1));
+  TEST_ASSERT_EQUAL(5, ExcitationResult());
+  TEST_ASSERT_EQUAL(0, ExcitationStart(100, 5, 40, 200, 8, 0));
+  TEST_ASSERT_EQUAL(0, ExcitationTick(0, INT_MIN, 1));
+  TEST_ASSERT_EQUAL(6, ExcitationResult());
+  TEST_ASSERT_EQUAL(0, ExcitationStart(100, 5, 40, 200, 8, 0));
+  TEST_ASSERT_EQUAL(0, ExcitationTick(0, 0, 0));
+  TEST_ASSERT_EQUAL(4, ExcitationResult());
+  TEST_ASSERT_EQUAL(0, ExcitationStart(100, 5, 40, 200, 8, 0));
+  ExcitationTick(0, 0, 1);
+  ExcitationRejectClipping();
+  TEST_ASSERT_FALSE(ExcitationSample());
+  TEST_ASSERT_FALSE(ExcitationActive());
+  TEST_ASSERT_EQUAL(7, ExcitationResult());
+  TEST_ASSERT_EQUAL(0, ExcitationLast());
+}
+
 int main(void) {
   UNITY_BEGIN();
+  RUN_TEST(test_excitation_balanced_and_repeatable);
+  RUN_TEST(test_excitation_bounds_and_guards);
   RUN_TEST(test_idle_produces_zero);
   RUN_TEST(test_target_defaults_to_torque);
   RUN_TEST(test_target_position_is_recorded);
