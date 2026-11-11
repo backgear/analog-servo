@@ -7,6 +7,16 @@
  */
 int ExcitationStart(int32_t amplitude, uint32_t hold, uint32_t duration,
                     int32_t travel, int32_t speed, int32_t position);
+/* Moving tests accept a fixed nonzero host command (+/-20 counts/tick max).
+ * Completion/abort requests that main ramp the host command back to zero. */
+int ExcitationStartMoving(int32_t amplitude, uint32_t hold, uint32_t duration,
+                          int32_t travel, int32_t speed, int32_t position,
+                          int32_t commandedVelocity);
+int ExcitationStartTorque(int32_t amplitude, uint32_t hold, uint32_t duration,
+                          int32_t travel, int32_t speed, int32_t position);
+int ExcitationTorqueMode(void);
+int32_t ExcitationExpectedVelocity(void);
+int ExcitationTakeMotionStop(void);
 void ExcitationStop(int result);
 int ExcitationActive(void);
 int ExcitationResult(void);

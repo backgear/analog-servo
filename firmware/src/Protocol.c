@@ -842,9 +842,12 @@ static void cmdExcite(int argc, char **argv) {
   if (argc == 2 && !strcmp(argv[1], "stop")) {
     ExcitationStop(3); respKV("state", "stopped"); return;
   }
-  if (argc != 7 || strcmp(argv[1], "start")) {
-    respError("usage: excite start <amp> <hold_ticks> <duration_ticks> <travel_counts> <speed_counts_per_tick> | stop"); return;
+  if (argc != 7 || (strcmp(argv[1], "start") && strcmp(argv[1], "moving") && strcmp(argv[1], "torque"))) {
+    respError("usage: excite <start|moving|torque> <amp> <hold_ticks> <duration_ticks> <travel_counts> <speed_counts_per_tick> | stop"); return;
   }
+  int moving = !strcmp(argv[1], "moving");
+  int32_t commanded = AppGetCommandedVelocity();
+  int64_t velocityError = (int64_t)AppGetLastVelocityActual() - commanded;
   int32_t amp, travel, speed;
   uint32_t hold, duration;
   if (ParseI32(argv[2], &amp) || ParseU32(argv[3], &hold) ||
@@ -852,14 +855,18 @@ static void cmdExcite(int argc, char **argv) {
     respError("invalid excitation parameters"); return;
   }
   if (!AppGetEnabled() || !AppGetHwEnableAsserted() || FaultIsLatched() ||
-      AppGetServoMode() != SERVO_MODE_VELOCITY || AppGetCommandedVelocity() != 0 ||
+      AppGetServoMode() != SERVO_MODE_VELOCITY ||
+      (moving ? commanded == 0 || velocityError < -2 || velocityError > 2 :
+                commanded != 0 || AppGetLastVelocityActual() != 0) ||
       AppPolarityLearnBusy() || AppAutotuneBusy() || AppGetSignalActive() ||
-      AppGetLastVelocityActual() != 0 ||
       (int64_t)AppGetConfig()->torqueClampMax < amp ||
       (int64_t)AppGetConfig()->torqueClampMin > -(int64_t)amp) {
-    respError("excitation requires stationary enabled host hold, no test/fault, and sufficient clamp headroom"); return;
+    respError("excitation requires steady enabled host operation, no test/fault, and sufficient clamp headroom"); return;
   }
-  if (ExcitationStart(amp, hold, duration, travel, speed, EncoderGetPositionCounts())) {
+  int result = !strcmp(argv[1], "torque")
+      ? ExcitationStartTorque(amp, hold, duration, travel, speed, EncoderGetPositionCounts())
+      : ExcitationStartMoving(amp, hold, duration, travel, speed, EncoderGetPositionCounts(), commanded);
+  if (result) {
     respError("invalid bounds, duration must be a multiple of 2*hold, or already running"); return;
   }
   respKV("state", "running");
@@ -1021,7 +1028,7 @@ static const cmd_t kCommands[] = {
   { "autotune", cmdAutotune,
     "<start relay <amp> [max_ticks] | start rls [lambda_q8] [glide_ms] | stop | apply>" },
 #endif
-  { "excite", cmdExcite, "<start <amp> <hold_ticks> <duration_ticks> <travel_counts> <speed_counts_per_tick> | stop>" },
+  { "excite", cmdExcite, "<start|moving|torque <amp> <hold_ticks> <duration_ticks> <travel_counts> <speed_counts_per_tick> | stop>" },
   { "config",   cmdConfig,   "<save|load|defaults> -- flash config persistence" },
   { NULL, NULL, NULL },
 };

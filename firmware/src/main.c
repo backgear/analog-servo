@@ -702,6 +702,8 @@ void AppControlTick(void) {
   }
 #endif
 
+  if (ExcitationTakeMotionStop()) sCommandedVelocity = 0;
+  int rawExcitation = ExcitationActive() && ExcitationTorqueMode();
   int32_t torqueCommand = 0;
 
   if (sLearningActive) {
@@ -830,6 +832,18 @@ void AppControlTick(void) {
     }
     if (sConfig.polarityLearned) torqueCommand *= sConfig.polaritySign;
     HAL_GPIO_WritePin(SIGNAL_BUSY_GPIO_PORT, SIGNAL_BUSY_PIN, GPIO_PIN_RESET);
+  } else if (rawExcitation) {
+    /* No position or velocity feedback during direct torque identification.
+     * Track actual position so normal hold never returns to the old target.
+     * Clear integrator/ramp state before re-entry, including a host stop. */
+    ControlSetTorqueScale(CONTROL_TORQUE_SCALE_FULL_Q8);
+    ControlReset();
+    RampInit(&sRamp);
+    RampSetAcceleration(&sRamp, sConfig.rampAccelCountsPerTickPerSec);
+    RampSetJerk(&sRamp, sConfig.velocityJerk);
+    sPositionTargetAccum = EncoderGetPositionCounts();
+    sLastCommandedPosition = sPositionTargetAccum;
+    sLastCommandedVelocity = 0;
   } else if (sEnabled && !FaultIsLatched()) {
     int32_t positionTarget;
     int64_t referenceVelocityQ8 = 0;
@@ -905,7 +919,7 @@ void AppControlTick(void) {
   int32_t injected = ExcitationTick(EncoderGetPositionCounts(), velocityActual,
       sEnabled && hwEnableAsserted && !FaultIsLatched() &&
       !sLearningActive && !AppAutotuneBusy() && !SignalIsActive() &&
-      sMode == SERVO_MODE_VELOCITY && sCommandedVelocity == 0 &&
+      sMode == SERVO_MODE_VELOCITY && sCommandedVelocity == ExcitationExpectedVelocity() &&
       !PositionMoveIsActive(&sPositionMove));
   if (ExcitationSample()) {
     int sign = sConfig.polarityLearned ? sConfig.polaritySign : 1;
@@ -917,9 +931,11 @@ void AppControlTick(void) {
     }
   }
 
+  if (ExcitationTakeMotionStop()) sCommandedVelocity = 0;
+
   /* Following error is only meaningful when Control.c's cascade actually ran
    * this tick: the normal enabled path, or a SIGNAL_TARGET_POSITION signal. */
-  int useRealPositionError = (sEnabled && !sLearningActive &&
+  int useRealPositionError = (sEnabled && !rawExcitation && !sLearningActive &&
 #ifdef ANALOG_SERVO_TWO_PHASE_DRIVE
                                !sCommLearningActive && !sPoleLearnActive &&
 #endif
@@ -971,7 +987,10 @@ void AppControlTick(void) {
 #ifdef ANALOG_SERVO_HAS_AUTOTUNE
     AutotuneStop();   /* ditto for an in-progress autotune */
 #endif
-    ExcitationRejectClipping(); /* no injection was applied on this fault tick */
+    if (ExcitationActive() || ExcitationSample()) {
+      ExcitationStop(4);
+      (void)ExcitationTick(0, 0, 0); /* clear unapplied sample without misreporting clipping */
+    }
     OutputForceSafe();
     IndicatorSetState(INDICATOR_FAULT);
     sLastTorqueCommand = 0;

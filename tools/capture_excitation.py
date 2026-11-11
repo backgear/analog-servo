@@ -17,8 +17,24 @@ def main():
     ap.add_argument('--amplitude', type=int, default=100)
     ap.add_argument('--hold', type=int, default=5)
     ap.add_argument('--ticks', type=int, default=1000)
+    ap.add_argument('--velocity', type=int, default=0,
+                    help='explicit moving test at +/-20 counts/tick max; stops on exit')
+    ap.add_argument('--direct-torque', action='store_true',
+                    help='bypass both loops; firmware resumes hold at new position')
+    ap.add_argument('--travel', type=int, default=2000)
+    ap.add_argument('--speed', type=int, default=20)
+    ap.add_argument('--torque-limit', type=int, default=2000,
+                    help='temporary symmetric clamp, never wider than entry clamps')
     ap.add_argument('--out', required=True)
     args = ap.parse_args()
+    if args.direct_torque and args.velocity:
+        ap.error('direct torque and moving hold are mutually exclusive')
+    if not 1 <= args.travel <= 10000 or not 1 <= args.speed <= 100:
+        ap.error('invalid travel/speed bounds')
+    if not 1 <= args.torque_limit <= 10000:
+        ap.error('torque limit must be within 1..10000')
+    if abs(args.velocity) > 20 or (args.velocity and args.amplitude > 500):
+        ap.error('moving tests require velocity within +/-20 and amplitude <=500')
     if not 1 <= args.amplitude <= 1000 or not 1 <= args.hold <= 100 or not 1 <= args.ticks <= 10000 or args.ticks % (2*args.hold):
         ap.error('require amplitude 1..1000, hold 1..100, duration <=10000 and divisible by 2*hold')
     cli = serial.Serial('/dev/ttyACM1', timeout=.1)
@@ -33,14 +49,32 @@ def main():
         if cli_get(cli, 'velocity.command') != '0' or cli_get(cli, 'test.active') != '0' or cli_get(cli, 'autotune.active') != '0':
             raise RuntimeError('requires no active command/test')
         limits = (cli_get(cli, 'torque.min'), cli_get(cli, 'torque.max'))
-        for text in ['set torque.min -2000', 'set torque.max 2000', 'enable']:
+        if int(limits[0]) >= 0 or int(limits[1]) <= 0:
+            raise RuntimeError('requires bipolar entry torque clamps')
+        temporary_min = max(int(limits[0]), -args.torque_limit)
+        temporary_max = min(int(limits[1]), args.torque_limit)
+        setup = [f'set torque.min {temporary_min}', f'set torque.max {temporary_max}']
+        if cli_get(cli, 'axis.enabled') != '1':
+            setup.append('enable')
+        for text in setup:
             response = cli_cmd(cli, text, .05)
             if 'error=' in response:
                 raise RuntimeError(response)
         worker.start()
         print(cli_cmd(cli, 'monitor start', .05))
         time.sleep(.3)
-        response = cli_cmd(cli, f'excite start {args.amplitude} {args.hold} {args.ticks} 200 8', .05)
+        travel, speed, mode = 200, 8, 'start'
+        if args.direct_torque:
+            travel, speed, mode = args.travel, args.speed, 'torque'
+        if args.velocity:
+            print(cli_cmd(cli, 'set velocity.command ' + str(args.velocity), .05))
+            time.sleep(1.5)
+            measured = int(cli_get(cli, 'velocity.raw'))
+            if abs(measured - args.velocity) > 2 or fault.is_set():
+                raise RuntimeError('failed to establish steady moving baseline')
+            travel = min(250000, abs(args.velocity) * (args.ticks + 500))
+            speed, mode = min(30, abs(args.velocity) + 5), 'moving'
+        response = cli_cmd(cli, f'excite {mode} {args.amplitude} {args.hold} {args.ticks} {travel} {speed}', .05)
         print(response)
         if 'state=running' not in response:
             raise RuntimeError(response)
@@ -55,6 +89,9 @@ def main():
             raise RuntimeError('excitation aborted with result ' + result)
     finally:
         print(cli_cmd(cli, 'excite stop', .05))
+        if args.velocity:
+            print(cli_cmd(cli, 'set velocity.command 0', .05))
+            time.sleep(.7)
         print(cli_cmd(cli, 'monitor stop', .05))
         stop.set()
         if worker.ident is not None:
@@ -66,7 +103,10 @@ def main():
             json.dump(frames, target)
         with open(args.out + '.meta.json', 'w') as target:
             json.dump(dict(amplitude=args.amplitude, hold_ticks=args.hold,
-                           duration_ticks=args.ticks, result=result,
+                           duration_ticks=args.ticks, velocity_command=args.velocity,
+                           temporary_torque_limit=args.torque_limit, direct_torque=args.direct_torque,
+                           travel_bound=args.travel if args.direct_torque else None,
+                           speed_bound=args.speed if args.direct_torque else None, result=result,
                            completed=result == '2'), target, indent=2)
         mon.close()
         cli.close()
