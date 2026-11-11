@@ -44,7 +44,9 @@ typedef struct {
 void ControlGetVelocitySample(ControlVelocitySample *out);
 
 void ControlInit(const ControlGains *gains);
-void ControlSetGains(const ControlGains *gains);   /* hot-reloadable, e.g. via Protocol.c */
+/* Foreground callers must serialize gain updates/reset/init with tick calls;
+ * shared main.c does this using the common interrupt mask. */
+void ControlSetGains(const ControlGains *gains);
 const ControlGains *ControlGetGains(void);
 
 #define CONTROL_TORQUE_SCALE_FULL_Q8 256   /* 1.0 in Q8.8 -- no reduction */

@@ -58,8 +58,8 @@ def main():
     args = ap.parse_args()
     if not .2 <= args.idle_seconds <= 10:
         ap.error('idle observation must be .2..10 seconds')
-    if not 1 <= args.repeats <= 10 or not 16 <= args.amplitude <= 128:
-        ap.error('require 1..10 repeats, 16..128 position counts')
+    if not 1 <= args.repeats <= 10 or not 16 <= args.amplitude <= 1024:
+        ap.error('require 1..10 repeats, 16..1024 position counts')
     root = Path(args.out)
     root.mkdir(parents=True, exist_ok=False)
     cli = serial.Serial('/dev/ttyACM1', timeout=.02, write_timeout=.5)
@@ -107,7 +107,7 @@ def main():
                         frames.append(f)
                         if f['fault_latched']:
                             problem.append('firmware fault: '+f['fault_reason'])
-                        if context['guarding'] and (abs(f['velocity']) > 20 or abs(f['position']-context['origin']) > 256):
+                        if context['guarding'] and (abs(f['velocity']) > (20 if args.amplitude <= 128 else 60) or abs(f['position']-context['origin']) > max(256, args.amplitude+128)):
                             problem.append('speed/travel guard')
                     if context['recorder']:
                         context['recorder'].write(data, decoded)

@@ -56,7 +56,7 @@ def main():
     ap.add_argument('captures', nargs='+')
     ap.add_argument('--labels', nargs='+', required=True)
     ap.add_argument('--out', required=True)
-    ap.add_argument('--vary', choices=['torque-limit', 'velocity-filter'], default='torque-limit')
+    ap.add_argument('--vary', choices=['torque-limit', 'velocity-filter', 'tuning'], default='torque-limit')
     args = ap.parse_args()
     if len(args.labels) != len(args.captures):
         ap.error('one label per capture required')
@@ -82,6 +82,8 @@ def main():
                         'torque.min', 'torque.max', 'torque.accel_feedforward', 'trajectory.move_feedforward',
                         'trajectory.jerk_limit', 'trajectory.accel_limit')
         allowed = {'torque.min', 'torque.max'} if args.vary == 'torque-limit' else {'velocity.filter_shift'}
+        if args.vary == 'tuning':
+            allowed |= {'position.kp', 'velocity.ki'}
         if first_settings is not None and (any(settings[k] != first_settings[k] for k in setting_keys if k not in allowed) or
                 any(metadata['parameters'][k] != first_recipe[k] for k in recipe_keys)):
             raise ValueError('gain/filter/recipe mismatch outside selected comparison variable')
@@ -92,6 +94,8 @@ def main():
         low, high = int(settings['torque.min']), int(settings['torque.max'])
         metrics.update(label=label, source=path, frames=len(frames),
                        torque_limits=[low, high], velocity_filter_shift=int(settings['velocity.filter_shift']),
+                       position_kp=int(settings['position.kp']), velocity_kp=int(settings['velocity.kp']),
+                       velocity_ki=int(settings['velocity.ki']),
                        step_saturated_ticks=sum(r['torque'] <= low or r['torque'] >= high for r in active),
                        missing_tick_gaps=sum(((b['seq']-a['seq']) & 0xffffffff) != 1 for a, b in zip(frames, frames[1:])))
         for col, segment in enumerate([active, ramp]):
@@ -122,7 +126,10 @@ def main():
             axes[row, col].grid(True, alpha=.25)
             axes[row, col].legend(fontsize=8)
     change = 'torque clamp' if args.vary == 'torque-limit' else 'P-feedback averaging'
-    fig.suptitle(f'Same gains and soft band; only {change} changes — single capture pair')
+    title = f'Same gains and soft band; only {change} changes'
+    if args.vary == 'tuning':
+        title = 'Same torque clamps, velocity P and soft band; compare averaging / position P / I'
+    fig.suptitle(title+' — single capture pair')
     prefix = Path(args.out)
     prefix.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(prefix.with_suffix('.png'), dpi=140)
