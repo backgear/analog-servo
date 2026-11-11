@@ -56,6 +56,7 @@ def main():
     ap.add_argument('captures', nargs='+')
     ap.add_argument('--labels', nargs='+', required=True)
     ap.add_argument('--out', required=True)
+    ap.add_argument('--vary', choices=['torque-limit', 'velocity-filter'], default='torque-limit')
     args = ap.parse_args()
     if len(args.labels) != len(args.captures):
         ap.error('one label per capture required')
@@ -77,17 +78,20 @@ def main():
         settings = dict(line.split('=', 1) for line in metadata['entry_settings'].splitlines() if '=' in line)
         recipe_keys = ('step_amplitude', 'step_half_period_ticks', 'velocity_peak', 'velocity_accel')
         setting_keys = ('position.kp', 'velocity.kp', 'velocity.ki', 'velocity.filter_shift',
-                        'velocity.deadband', 'velocity.limit', 'output.trim', 'trajectory.velocity_limit')
-        if first_settings is not None and (any(settings[k] != first_settings[k] for k in setting_keys) or
+                        'velocity.deadband', 'velocity.limit', 'output.trim', 'trajectory.velocity_limit',
+                        'torque.min', 'torque.max', 'torque.accel_feedforward', 'trajectory.move_feedforward',
+                        'trajectory.jerk_limit', 'trajectory.accel_limit')
+        allowed = {'torque.min', 'torque.max'} if args.vary == 'torque-limit' else {'velocity.filter_shift'}
+        if first_settings is not None and (any(settings[k] != first_settings[k] for k in setting_keys if k not in allowed) or
                 any(metadata['parameters'][k] != first_recipe[k] for k in recipe_keys)):
-            raise ValueError('gain/filter/recipe mismatch; not a clamp-only comparison')
+            raise ValueError('gain/filter/recipe mismatch outside selected comparison variable')
         first_settings, first_recipe = settings, metadata['parameters']
         active = [r for r in frames if r['synthetic']]
         ramp = ramp_segment(frames)
         metrics = step_metrics(active)
         low, high = int(settings['torque.min']), int(settings['torque.max'])
         metrics.update(label=label, source=path, frames=len(frames),
-                       torque_limits=[low, high],
+                       torque_limits=[low, high], velocity_filter_shift=int(settings['velocity.filter_shift']),
                        step_saturated_ticks=sum(r['torque'] <= low or r['torque'] >= high for r in active),
                        missing_tick_gaps=sum(((b['seq']-a['seq']) & 0xffffffff) != 1 for a, b in zip(frames, frames[1:])))
         for col, segment in enumerate([active, ramp]):
@@ -117,7 +121,8 @@ def main():
             axes[row, col].set_ylabel(ylabel)
             axes[row, col].grid(True, alpha=.25)
             axes[row, col].legend(fontsize=8)
-    fig.suptitle('Same gains/filter/soft band; only torque clamp changes — single capture pair')
+    change = 'torque clamp' if args.vary == 'torque-limit' else 'P-feedback averaging'
+    fig.suptitle(f'Same gains and soft band; only {change} changes — single capture pair')
     prefix = Path(args.out)
     prefix.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(prefix.with_suffix('.png'), dpi=140)
