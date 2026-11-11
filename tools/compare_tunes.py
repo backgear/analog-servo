@@ -50,7 +50,14 @@ def main():
     ap.add_argument('--out', required=True)
     ap.add_argument('--repeats', type=int, default=3, help='per direction per condition')
     ap.add_argument('--amplitude', type=int, default=64)
+    ap.add_argument('--tunes', nargs='+', choices=['baseline', 'moderate', 'stiffer'],
+                    default=['baseline', 'moderate', 'stiffer'])
+    ap.add_argument('--deadbands', type=int, nargs='+', choices=[0, 1, 2], default=[1, 0])
+    ap.add_argument('--idle-seconds', type=float, default=2)
+    ap.add_argument('--firmware-label', default='unspecified')
     args = ap.parse_args()
+    if not .2 <= args.idle_seconds <= 10:
+        ap.error('idle observation must be .2..10 seconds')
     if not 1 <= args.repeats <= 10 or not 16 <= args.amplitude <= 128:
         ap.error('require 1..10 repeats, 16..128 position counts')
     root = Path(args.out)
@@ -137,8 +144,10 @@ def main():
         wait(.3)
         candidates = [('baseline', int(saved['position.kp']), int(saved['velocity.kp']), int(saved['velocity.ki'])),
                       ('moderate', 16, 289000, 82), ('stiffer', 21, 365000, 82)]
-        for deadband in [1, 0]:
+        for deadband in args.deadbands:
             for name, pos, kp, ki in candidates:
+                if name not in args.tunes:
+                    continue
                 label = f'{name}-db{deadband}'
                 rec = Recorder(root/label)
                 with lock:
@@ -146,7 +155,8 @@ def main():
                 rec.event('session', tool='compare_tunes', tune=name, position_kp=pos,
                           velocity_kp=kp, velocity_ki=ki, deadband=deadband,
                           amplitude=args.amplitude, observation_ticks=800,
-                          test='unramped position signal', cpr_estimate=4000)
+                          test='unramped position signal', cpr_estimate=4000,
+                          firmware_label=args.firmware_label, idle_seconds=args.idle_seconds)
                 trials = []
                 condition_complete = False
                 try:
@@ -173,10 +183,17 @@ def main():
                             trials.append(metrics)
                             rec.event('step_metrics', **metrics)
                             print(label, json.dumps(metrics), flush=True)
+                    wait(args.idle_seconds)
                     with lock:
-                        idle = list(frames[-200:])
+                        last = frames[-1]['seq']
+                        idle = [f for f in frames if ((last-f['seq']) & 0xffffffff) < args.idle_seconds*1000]
                     summary = dict(tune=name, position_kp=pos, velocity_kp=kp, velocity_ki=ki,
                                    deadband=deadband, trials=trials,
+                                   firmware_label=args.firmware_label,
+                                   idle_observation_seconds=args.idle_seconds,
+                                   idle_frames=len(idle),
+                                   idle_torque_mean=float(np.mean([f['torque'] for f in idle])),
+                                   idle_speed_rms=float(np.sqrt(np.mean([f['velocity']**2 for f in idle]))),
                                    idle_torque_ac_rms=float(np.std([f['torque'] for f in idle])),
                                    idle_position_span=max(f['position'] for f in idle)-min(f['position'] for f in idle))
                     settles = [r['settle_ms'] for r in trials if r['settle_ms'] is not None]

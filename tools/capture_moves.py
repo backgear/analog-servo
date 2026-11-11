@@ -35,7 +35,10 @@ Usage:
 
 Any CLI variable this script changes outside what it's demonstrating
 (trajectory.accel_limit, for the velocity move) is restored before exit.
-Aborts and clears the firmware fault, cleanly, on the first fault seen.
+Aborts on a firmware fault without clearing it. Always attempts to stop motion
+and restore the entry acceleration setting. --leave-enabled resumes a stationary
+hold on success; otherwise exits disabled. The short velocity pulse is host-timed,
+not a firmware watchdog: use only on an attended, appropriate bench.
 """
 import argparse
 import json
@@ -94,97 +97,103 @@ def main():
     ap.add_argument("--velocity-accel", type=int, default=250,
                      help="trajectory.accel_limit used only for the velocity move "
                           "(lower = more visibly sloped triangle); restored after")
+    ap.add_argument('--leave-enabled', action='store_true',
+                    help='resume stationary hold on successful completion')
     args = ap.parse_args()
+    if args.step_amplitude <= 0 or args.step_half_period_ticks <= 0 or not 1 <= args.velocity_peak <= 30 or args.velocity_accel <= 0:
+        ap.error('positive step/duration/acceleration required; velocity peak must be 1..30')
 
     cli = serial.Serial(args.cli_port, args.cli_baud, timeout=0.5)
     time.sleep(0.3)
     cli.reset_input_buffer()
 
-    if cli_get(cli, "fault.latched") != "0":
-        print("ABORT: fault already latched before starting:", cli_cmd(cli, "status"))
-        sys.exit(1)
-
     captured = []
-    fault_seen = threading.Event()
-    stop_event = threading.Event()
+    fault_seen, stop_event = threading.Event(), threading.Event()
+    mon, t, orig_accel = None, None, None
+    completed = False
+    metadata = dict(parameters=vars(args), completed=False)
+    try:
+        settings = cli_cmd(cli, 'settings')
+        metadata['entry_settings'] = settings
+        parsed = dict(line.split('=', 1) for line in settings.splitlines() if '=' in line)
+        if parsed.get('fault.latched') != '0' or parsed.get('input.source') != 'host':
+            raise RuntimeError('requires fault-free host mode')
+        if parsed.get('velocity.command') != '0' or any(parsed.get(k) != '0' for k in ('test.active', 'autotune.active', 'excite.active')):
+            raise RuntimeError('requires no active command/test')
+        orig_accel = int(parsed['trajectory.accel_limit'])
+        mon = serial.Serial(args.mon_port, args.mon_baud, timeout=.05)
+        mon.reset_input_buffer()
+        t = threading.Thread(target=reader_thread, args=(mon, captured, fault_seen, stop_event), daemon=True)
+        t.start()
 
-    mon = serial.Serial(args.mon_port, args.mon_baud, timeout=0.2)
-    time.sleep(0.2)
-    mon.reset_input_buffer()
-    t = threading.Thread(target=reader_thread, args=(mon, captured, fault_seen, stop_event), daemon=True)
-    t.start()
+        def checked(text):
+            response = cli_cmd(cli, text, .05)
+            print(response)
+            if any(line.startswith('error=') for line in response.splitlines()):
+                raise RuntimeError(response)
+            return response
 
-    print(cli_cmd(cli, "set velocity.command 0"))
-    cur_pos = int(cli_get(cli, "position.raw"))
-    print(cli_cmd(cli, "set position.command %d" % cur_pos))
-    print(cli_cmd(cli, "monitor start"))
-    print(cli_cmd(cli, "enable"))
-    time.sleep(0.3)
+        def wait(seconds):
+            end = time.monotonic()+seconds
+            while time.monotonic() < end:
+                if fault_seen.is_set():
+                    raise RuntimeError('firmware fault; not clearing it')
+                if captured and (abs(captured[-1]['velocity']) > 60 or time.monotonic()-captured[-1]['t'] > .5):
+                    raise RuntimeError('speed/stale-telemetry guard')
+                time.sleep(.005)
 
-    # ---- Move 1: a sharp position step ----
-    print("Move 1 (sharp position step, test square position %d/%d/%d):" %
-          (args.step_amplitude, args.step_half_period_ticks, args.step_half_period_ticks))
-    print(cli_cmd(cli, "test square position %d %d %d" %
-                  (args.step_amplitude, args.step_half_period_ticks, args.step_half_period_ticks)))
+        checked('set velocity.command 0')
+        checked('set position.command '+cli_get(cli, 'position.raw'))
+        checked('monitor start')
+        checked('enable')
+        wait(.3)
+        print('Move 1: sharp position step')
+        checked(f'test square position {args.step_amplitude} {args.step_half_period_ticks} {args.step_half_period_ticks}')
+        wait(args.step_half_period_ticks/1000+.4)
+        if cli_get(cli, 'test.active') != '0':
+            raise RuntimeError('position test did not finish')
 
-    deadline = time.monotonic() + 3.0
-    while time.monotonic() < deadline:
-        if fault_seen.is_set():
-            break
-        if cli_get(cli, "test.active") == "0":
-            break
-        time.sleep(0.05)
-    time.sleep(0.3)
-
-    if fault_seen.is_set():
-        print("ABORT: fault latched during move 1:", cli_cmd(cli, "status"))
-        print(cli_cmd(cli, "test stop"))
-        print(cli_cmd(cli, "fault clear"))
-        print(cli_cmd(cli, "disable"))
-        print(cli_cmd(cli, "monitor stop"))
-        sys.exit(1)
-
-    # Clean handoff back to normal Mode B operation: AppSetEnabled(1)
-    # resyncs sPositionTargetAccum = EncoderGetPositionCounts() (main.c),
-    # so disable->enable means no stale target and no snap-back.
-    print(cli_cmd(cli, "disable"))
-    time.sleep(0.2)
-    print(cli_cmd(cli, "enable"))
-    time.sleep(0.2)
-
-    # ---- Move 2: a velocity move with a triangular ramp ----
-    orig_accel = int(cli_get(cli, "trajectory.accel_limit"))
-    print(cli_cmd(cli, "set trajectory.accel_limit %d" % args.velocity_accel))
-    ramp_seconds = args.velocity_peak / args.velocity_accel
-    print("Move 2 (triangular velocity ramp): accel_limit %d (restoring %d after), "
-          "peak %d ct/tick, ~%.0fms up/down" %
-          (args.velocity_accel, orig_accel, args.velocity_peak, ramp_seconds * 1000))
-    # cli_cmd()'s own ack-wait would dwarf a short ramp -- fire both writes
-    # back-to-back with no wait in between so the real hold at peak is just
-    # the sleep(ramp_seconds), then read both acks together after.
-    cli.write(("set velocity.command %d\r\n" % args.velocity_peak).encode())
-    time.sleep(ramp_seconds)
-    cli.write(b"set velocity.command 0\r\n")
-    time.sleep(0.2)
-    print(cli.read(500).decode(errors="replace"))
-    time.sleep(ramp_seconds + 0.4)   # ramp back down + settle
-    print(cli_cmd(cli, "set trajectory.accel_limit %d" % orig_accel))
-
-    if fault_seen.is_set():
-        print("ABORT: fault latched during move 2:", cli_cmd(cli, "status"))
-        print(cli_cmd(cli, "fault clear"))
-
-    time.sleep(0.2)
-    print(cli_cmd(cli, "disable"))
-    print(cli_cmd(cli, "monitor stop"))
-    stop_event.set()
-    t.join(timeout=1.0)
-    mon.close()
-    cli.close()
-
-    with open(args.out, "w") as f:
-        json.dump(captured, f)
-    print("Captured %d frames -> %s" % (len(captured), args.out))
+        checked('disable')
+        wait(.2)
+        checked('enable')
+        wait(.2)
+        checked(f'set trajectory.accel_limit {args.velocity_accel}')
+        ramp_seconds = args.velocity_peak/args.velocity_accel
+        print(f'Move 2: triangular velocity ramp, nominal peak {args.velocity_peak}, up/down {ramp_seconds*1000:.0f} ms')
+        cli.write((f'set velocity.command {args.velocity_peak}\r\n').encode())
+        try:
+            wait(ramp_seconds)
+        finally:
+            cli.write(b'set velocity.command 0\r\n')
+        wait(ramp_seconds+.7)
+        completed = True
+    finally:
+        try:
+            if orig_accel is not None:
+                cli_cmd(cli, 'test stop', .05)
+                cli_cmd(cli, 'set velocity.command 0', .05)
+                cli_cmd(cli, f'set trajectory.accel_limit {orig_accel}', .05)
+                if completed and args.leave_enabled and not fault_seen.is_set():
+                    cli_cmd(cli, 'set position.command '+cli_get(cli, 'position.raw'), .05)
+                    cli_cmd(cli, 'enable', .05)
+                    time.sleep(.3)
+                else:
+                    cli_cmd(cli, 'disable', .05)
+                cli_cmd(cli, 'monitor stop', .05)
+                metadata['exit_settings'] = cli_cmd(cli, 'settings')
+        finally:
+            stop_event.set()
+            if t is not None:
+                t.join(timeout=1)
+            if mon is not None:
+                mon.close()
+            cli.close()
+            metadata['completed'] = completed
+            with open(args.out, 'w') as target:
+                json.dump(captured, target)
+            with open(args.out+'.meta.json', 'w') as target:
+                json.dump(metadata, target, indent=2)
+            print(f'Captured {len(captured)} frames -> {args.out}')
 
 
 if __name__ == "__main__":

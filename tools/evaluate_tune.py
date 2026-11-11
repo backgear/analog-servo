@@ -185,7 +185,7 @@ def main():
                            extrapolation=comparison_metrics(vf, vm, vc, parameters, 150, 250, args.tick_hz)))
     results = [evaluate(parameters, c, args.tick_hz) for c in candidates]
     for result, candidate in zip(results, candidates):
-        result['position_error_counts_at_velocity_deadband_boundary'] = (
+        result['position_error_counts_at_soft_band_boundary'] = (
             int(settings.get('velocity.deadband', '0'))*256/candidate['position_kp'])
         result['measured_velocity_margins_8_to_150_hz'] = margins(
             f[mask], measured[mask]*velocity_controller(f[mask], candidate['velocity_kp'],
@@ -197,9 +197,10 @@ def main():
     report = dict(status='offline local linear predictions; not bench-validated',
                   warnings=['Fit uses 8–150 Hz only: DC friction, integral tuning and slow step tails are not independently identified.',
                             'Margins with crossings outside the training band are extrapolations.',
-                            'Unit steps are ideal linear illustrations; one-count commands encounter real firmware deadband.',
+                            'Unit steps are ideal linear illustrations; nonlinear proportional noise-band shaping is not modeled.',
                             'Default candidates are illustrative comparisons, not optimized or approved gains.',
-                            'Configured velocity deadband can mask position corrections; see each candidate boundary.'],
+                            'Configured soft band reduces small-error P gain; I still receives the full error.'],
+                  noise_band_behavior='half-slope P inside band, full-error I',
                   recorded_velocity_deadband=int(settings.get('velocity.deadband', '0')),
                   exclusions=['deadband', 'encoder quantization', 'saturation/anti-windup',
                               'trajectory and reference-limit switching', 'gravity/load variation'],
