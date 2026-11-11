@@ -29,13 +29,9 @@ static ControlGains sGains = {
   .torqueClampMax = TORQUE_FULL_SCALE,
 };
 
-/* Keep velocity errors in Q8 and accumulated torque in Q16. No per-tick
- * truncation of the integral, and no whole-count position-loop deadband.
- * There IS a whole-count VELOCITY-error deadband (velocityErrorDeadbandCounts,
- * default 0/disabled) -- see Control.h's field comment; a position-loop
- * deadband and this one solve different problems (masking a real residual
- * position error vs. ignoring unavoidable quantization noise in the
- * velocity signal) and aren't interchangeable. */
+/* Keep velocity errors in Q8 and accumulated torque in Q16. The optional
+ * velocity noise band softens P only; I always receives the full error so
+ * persistent fractional corrections are not discarded. See Control.h. */
 static int64_t sVelIntegralQ16 = 0;
 static int64_t sFilteredVelocityQ8 = 0;
 static int sVelocityFilterInitialized = 0;
@@ -89,16 +85,16 @@ static int32_t VelocityTickQ8(int64_t targetQ8, int32_t measuredVelocity, int64_
   int64_t errorQ8 = targetQ8 - sFilteredVelocityQ8;
   sLastVelocityReferenceQ8 = targetQ8;
   sLastVelocityErrorQ8 = errorQ8;
+  int64_t pErrorQ8 = errorQ8;
   if (sGains.velocityErrorDeadbandCounts > 0) {
-    int64_t deadbandQ8 = (int64_t)sGains.velocityErrorDeadbandCounts * 256;
-    /* >=/<=, not strict -- velocityActual is always a whole count, so errorQ8 against a
-     * whole-count target is always an exact multiple of 256; a strict < would never
-     * actually catch deadbandCounts=1's own boundary (exactly 1 count), making it a no-op
-     * for the one case it exists to suppress. */
-    if (errorQ8 >= -deadbandQ8 && errorQ8 <= deadbandQ8) errorQ8 = 0;
+    int64_t bandQ8 = (int64_t)sGains.velocityErrorDeadbandCounts * 256;
+    /* Continuous soft band: half slope inside, normal slope outside, with
+     * no boundary jump. Signed division keeps the mapping symmetric; Q8
+     * rounding can retain one extra fractional LSB. Never modify I's error. */
+    pErrorQ8 -= Clamp64(errorQ8, -bandQ8, bandQ8) / 2;
   }
-  sLastControlErrorQ8 = errorQ8;
-  int64_t pQ16 = errorQ8 * sGains.velGainKpQ8;
+  sLastControlErrorQ8 = pErrorQ8;
+  int64_t pQ16 = pErrorQ8 * sGains.velGainKpQ8;
   int64_t candidateQ16 = sVelIntegralQ16 + errorQ8 * sGains.velGainKiQ8;
   int64_t loQ16 = (int64_t)sGains.torqueClampMin * sTorqueScaleQ8 * 256;
   int64_t hiQ16 = (int64_t)sGains.torqueClampMax * sTorqueScaleQ8 * 256;

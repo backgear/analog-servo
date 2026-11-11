@@ -373,11 +373,9 @@ static void test_command_specific_speed_limit_cannot_exceed_feedback_limit(void)
   TEST_ASSERT_EQUAL_INT32(60,ControlGetLastVelocityTarget());
 }
 
-/* A large velGainKpQ8 (tuned aggressively for fast settle) turns +-1 count/tick of
- * UNAVOIDABLE encoder quantization noise at rest into a disproportionate torque kick with
- * no net motion -- real wasted power/heat, not a tuning mistake. The deadband exists to
- * suppress exactly that, without masking a real error. */
-static void test_velocity_error_deadband_suppresses_quantization_noise_only(void) {
+/* The soft band reduces P without discarding a persistent error or making
+ * a torque discontinuity at the edge of the configured width. */
+static void test_velocity_error_noise_band_softens_proportional_only(void) {
   ControlGains g = {
     .posGainQ8 = 0, .velGainKpQ8 = 1024, .velGainKiQ8 = 0,
     .velocityClamp = 10000,
@@ -385,13 +383,9 @@ static void test_velocity_error_deadband_suppresses_quantization_noise_only(void
     .velocityErrorDeadbandCounts = 1,
   };
   ControlInit(&g);
-  /* Exactly +-1 count/tick (the deadband's own boundary) -- a settled axis can't resolve
-   * any finer than this, so there's nothing genuine to correct. */
-  TEST_ASSERT_EQUAL_INT32(0, ControlTick(0, 0, 1, 1000));
-  TEST_ASSERT_EQUAL_INT32(0, ControlTick(0, 0, -1, 1000));
-  /* A genuinely larger error (2 counts, outside the 1-count deadband) still produces real
-   * torque -- this isn't just zeroing the proportional term unconditionally. */
-  TEST_ASSERT_EQUAL_INT32(-8, ControlTick(0, 0, 2, 1000));
+  TEST_ASSERT_EQUAL_INT32(-2, ControlTick(0, 0, 1, 1000));
+  TEST_ASSERT_EQUAL_INT32(2, ControlTick(0, 0, -1, 1000));
+  TEST_ASSERT_EQUAL_INT32(-6, ControlTick(0, 0, 2, 1000));
 }
 
 static void test_velocity_error_deadband_disabled_by_default_is_a_no_op(void) {
@@ -416,7 +410,7 @@ static void test_velocity_diagnostics_match_filter_and_deadband(void) {
   TEST_ASSERT_EQUAL_INT32(20,sample.reference);
   TEST_ASSERT_EQUAL_INT32(5,sample.filtered);
   TEST_ASSERT_EQUAL_INT32(15,sample.error);
-  TEST_ASSERT_EQUAL_INT32(0,sample.controlError);
+  TEST_ASSERT_EQUAL_INT32(8,sample.controlError);
   ControlReset(); ControlGetVelocitySample(&sample);
   TEST_ASSERT_EQUAL_INT32(0,sample.reference);
   TEST_ASSERT_EQUAL_INT32(0,sample.filtered);
@@ -439,12 +433,64 @@ static void test_velocity_diagnostics_round_fractional_values_symmetrically(void
   TEST_ASSERT_EQUAL_INT32(1,sample.error);
 }
 
+static void test_noise_band_integrates_persistent_fractional_errors(void) {
+  ControlGains g = *ControlGetGains();
+  g.posGainQ8=0; g.velGainKpQ8=0; g.velGainKiQ8=256;
+  g.velocityErrorDeadbandCounts=1; g.velocityFilterShift=0;
+  g.velocityClamp=10000; g.torqueClampMin=-32767; g.torqueClampMax=32767;
+  ControlInit(&g);
+  int32_t output=0;
+  for (int i=0; i<4; i++) output=ControlTickWithReferenceQ8(0,0,0,64,1000);
+  TEST_ASSERT_EQUAL_INT32(1, output);
+  for (int i=0; i<4; i++) output=ControlTickWithReferenceQ8(0,0,0,64,1000);
+  TEST_ASSERT_EQUAL_INT32(2, output);
+  ControlReset();
+  for (int i=0; i<4; i++) output=ControlTickWithReferenceQ8(0,0,0,-64,1000);
+  TEST_ASSERT_EQUAL_INT32(-1, output);
+}
+static void test_noise_band_integral_accounts_for_reversing_encoder_errors(void) {
+  ControlGains g=*ControlGetGains();
+  g.velGainKpQ8=0; g.velGainKiQ8=256; g.velocityErrorDeadbandCounts=1;
+  g.velocityFilterShift=0; g.torqueClampMin=-32767; g.torqueClampMax=32767;
+  ControlInit(&g);
+  for (int i=0; i<100; i++) {
+    TEST_ASSERT_EQUAL_INT32(-1, ControlVelocityTick(0,1,1000));
+    TEST_ASSERT_EQUAL_INT32(0, ControlVelocityTick(0,-1,1000));
+  }
+}
+static void test_noise_band_boundary_is_continuous_at_fractional_resolution(void) {
+  ControlGains g=*ControlGetGains();
+  g.posGainQ8=0; g.velGainKpQ8=65536; g.velGainKiQ8=0;
+  g.velocityErrorDeadbandCounts=1; g.velocityFilterShift=0;
+  g.velocityClamp=10000; g.torqueClampMin=-32767; g.torqueClampMax=32767;
+  ControlInit(&g);
+  TEST_ASSERT_EQUAL_INT32(128, ControlTickWithReferenceQ8(0,0,0,255,1000));
+  TEST_ASSERT_EQUAL_INT32(128, ControlTickWithReferenceQ8(0,0,0,256,1000));
+  TEST_ASSERT_EQUAL_INT32(129, ControlTickWithReferenceQ8(0,0,0,257,1000));
+  TEST_ASSERT_EQUAL_INT32(-128, ControlTickWithReferenceQ8(0,0,0,-255,1000));
+  TEST_ASSERT_EQUAL_INT32(-128, ControlTickWithReferenceQ8(0,0,0,-256,1000));
+  TEST_ASSERT_EQUAL_INT32(-129, ControlTickWithReferenceQ8(0,0,0,-257,1000));
+}
+static void test_noise_band_preserves_integral_anti_windup(void) {
+  ControlGains g=*ControlGetGains();
+  g.posGainQ8=0; g.velGainKpQ8=1024; g.velGainKiQ8=256;
+  g.velocityErrorDeadbandCounts=1; g.velocityFilterShift=0;
+  g.velocityClamp=10000; g.torqueClampMin=-2; g.torqueClampMax=2;
+  ControlInit(&g);
+  for (int i=0; i<100; i++) ControlTickWithReferenceQ8(0,0,0,128,1000);
+  TEST_ASSERT_EQUAL_INT32(-1, ControlTickWithReferenceQ8(0,0,0,-128,1000));
+}
+
 int main(void) {
   UNITY_BEGIN();
+  RUN_TEST(test_noise_band_integrates_persistent_fractional_errors);
+  RUN_TEST(test_noise_band_integral_accounts_for_reversing_encoder_errors);
+  RUN_TEST(test_noise_band_boundary_is_continuous_at_fractional_resolution);
+  RUN_TEST(test_noise_band_preserves_integral_anti_windup);
   RUN_TEST(test_velocity_diagnostics_match_filter_and_deadband);
   RUN_TEST(test_velocity_diagnostics_round_fractional_values_symmetrically);
   RUN_TEST(test_command_specific_speed_limit_cannot_exceed_feedback_limit);
-  RUN_TEST(test_velocity_error_deadband_suppresses_quantization_noise_only);
+  RUN_TEST(test_velocity_error_noise_band_softens_proportional_only);
   RUN_TEST(test_velocity_error_deadband_disabled_by_default_is_a_no_op);
   RUN_TEST(test_fractional_reference_feedforward_is_preserved);
   RUN_TEST(test_acceleration_feedforward_uses_current_ramp_change);

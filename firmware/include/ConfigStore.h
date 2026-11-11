@@ -40,9 +40,8 @@
  * tier-1 default -- tune on the bench. */
 #define CONFIG_DEFAULT_RAMP_ACCEL 1000
 
-/* See Control.h's ControlGains.velocityErrorDeadbandCounts field comment. 0
- * disables -- needed once vel_kp is tuned aggressively enough that +-1
- * count/tick of encoder quantization noise produces visible idle chatter. */
+/* Soft proportional noise-band width; see Control.h. 0 disables shaping.
+ * The full error always reaches I, including inside this band. */
 #define CONFIG_DEFAULT_VELOCITY_ERROR_DEADBAND_COUNTS 0
 
 /* output.topology=two_phase_analog placeholders (`two-phase-output` draft-PR
