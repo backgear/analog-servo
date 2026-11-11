@@ -21,7 +21,8 @@ typedef struct {
   int32_t torqueClampMin, torqueClampMax;
   int32_t accelerationFeedforwardQ8; /* torque per counts/tick^2, Q8 */
   int32_t velocityFilterShift; /* P's measured velocity only: 0 raw;
-                                    1..4 causal IIR alpha=1/(2^shift).
+                                    1..4 average the last 2^shift samples.
+                                    At 1kHz, shift=1 adds 0.5ms delay.
                                     Position, reference and I remain unfiltered. */
   int32_t velocityErrorDeadbandCounts; /* Soft P noise-band width in counts/tick.
                                            0 disables (default). P uses

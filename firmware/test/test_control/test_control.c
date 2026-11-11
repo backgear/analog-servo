@@ -389,9 +389,40 @@ static void test_filtered_p_antiwindup_uses_raw_integral_error(void) {
   ControlInit(&g);
   ControlVelocityTick(0,0,1000);
   TEST_ASSERT_EQUAL_INT32(-10,ControlVelocityTick(0,20,1000));
-  /* Filtered measurement is now zero, but raw -10 must integrate +10. */
-  TEST_ASSERT_EQUAL_INT32(10,ControlVelocityTick(0,-10,1000));
+  /* Filtered measurement is +5, but raw -10 must integrate +10. */
+  TEST_ASSERT_EQUAL_INT32(5,ControlVelocityTick(0,-10,1000));
   TEST_ASSERT_EQUAL_INT32(10,ControlVelocityTick(0,0,1000));
+}
+
+static void test_two_sample_p_average_has_finite_support(void) {
+  ControlGains g=*ControlGetGains();
+  g.velGainKpQ8=65536;g.velGainKiQ8=0;g.velocityFilterShift=1;
+  g.velocityErrorDeadbandCounts=0;
+  ControlInit(&g);ControlVelocityTick(0,0,1000);
+  TEST_ASSERT_EQUAL_INT32(-128,ControlVelocityTick(0,1,1000));
+  TEST_ASSERT_EQUAL_INT32(-128,ControlVelocityTick(0,0,1000));
+  TEST_ASSERT_EQUAL_INT32(0,ControlVelocityTick(0,0,1000));
+  for (int i=0;i<100;i++) {
+    TEST_ASSERT_EQUAL_INT32(-128,ControlVelocityTick(0,1,1000));
+    TEST_ASSERT_EQUAL_INT32(0,ControlVelocityTick(0,-1,1000));
+    /* Previous sample is now -1: next +1 averages to zero. */
+    for (int j=0;j<10;j++) {
+      TEST_ASSERT_EQUAL_INT32(0,ControlVelocityTick(0,1,1000));
+      TEST_ASSERT_EQUAL_INT32(0,ControlVelocityTick(0,-1,1000));
+    }
+    ControlReset();ControlVelocityTick(0,0,1000);
+  }
+}
+
+static void test_p_average_hot_changes_use_recent_history(void) {
+  ControlGains g=*ControlGetGains();
+  g.velGainKpQ8=256;g.velGainKiQ8=0;g.velocityFilterShift=0;
+  g.velocityErrorDeadbandCounts=0;
+  ControlInit(&g);ControlVelocityTick(0,0,1000);
+  ControlVelocityTick(0,10,1000);
+  g.velocityFilterShift=1;ControlSetGains(&g);
+  TEST_ASSERT_EQUAL_INT32(-5,ControlVelocityTick(0,0,1000));
+  TEST_ASSERT_EQUAL_INT32(0,ControlVelocityTick(0,0,1000));
 }
 
 static void test_acceleration_feedforward_uses_current_ramp_change(void) {
@@ -545,6 +576,8 @@ int main(void) {
   RUN_TEST(test_p_filter_does_not_discard_or_repeatedly_integrate_counts);
   RUN_TEST(test_p_filter_preserves_reference_and_decays_without_bias);
   RUN_TEST(test_filtered_p_antiwindup_uses_raw_integral_error);
+  RUN_TEST(test_two_sample_p_average_has_finite_support);
+  RUN_TEST(test_p_average_hot_changes_use_recent_history);
   RUN_TEST(test_velocity_feedforward_tracks_without_position_lag);
   RUN_TEST(test_feedforward_adds_feedback_and_clamps_total);
   RUN_TEST(test_step_response_converges);

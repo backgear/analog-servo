@@ -34,9 +34,10 @@ static ControlGains sGains = {
  * persistent fractional corrections are not discarded. See Control.h. */
 static int64_t sVelIntegralQ16 = 0;
 static int64_t sFilteredVelocityQ8 = 0;
-/* Extra precision lets P's Q8 readout decay to zero after an isolated count,
- * rather than sticking at a fractional Q8 LSB through integer division. */
-static int64_t sVelocityFilterStateQ16 = 0;
+/* Finite-window P-feedback average: 1,2,4,8,16 samples. Keep history even
+ * when bypassed so hot filter changes cannot resurrect stale measurements. */
+static int32_t sVelocityHistory[16];
+static int sVelocityHistoryIndex = 0;
 static int sVelocityFilterInitialized = 0;
 static int64_t sPreviousReferenceVelocityQ8 = 0;
 static int64_t sReferenceAccelerationQ8 = 0;
@@ -49,7 +50,7 @@ void ControlInit(const ControlGains *gains) {
   if (gains) sGains = *gains;
   sVelIntegralQ16 = 0;
   sFilteredVelocityQ8 = 0;
-  sVelocityFilterStateQ16 = 0;
+  sVelocityHistoryIndex = 0;
   sVelocityFilterInitialized = 0;
   sPreviousReferenceVelocityQ8 = 0;
   sReferenceAccelerationQ8 = 0;
@@ -75,17 +76,22 @@ static int32_t RoundQ16(int64_t v) {
 static int32_t VelocityTickQ8(int64_t targetQ8, int32_t measuredVelocity, int64_t torqueFeedforwardQ16) {
   int64_t measuredQ8 = (int64_t)measuredVelocity * 256;
   int shift = sGains.velocityFilterShift;
-  if (!sVelocityFilterInitialized || shift <= 0) {
-    sVelocityFilterStateQ16 = measuredQ8 * 256;
+  if (shift < 0) shift = 0;
+  if (shift > 4) shift = 4;
+  if (!sVelocityFilterInitialized) {
+    for (int i=0;i<16;i++) sVelocityHistory[i] = measuredVelocity;
     sVelocityFilterInitialized = 1;
-  } else {
-    /* Causal P-feedback estimator; shift=1 means alpha=1/2. Do not filter
-     * position, reference, I's measurement, or fault/monitor velocity.
-     * Filtering adds delay, so it remains disabled by default. */
-    if (shift > 4) shift = 4;
-    sVelocityFilterStateQ16 += (measuredQ8 * 256 - sVelocityFilterStateQ16) / (1 << shift);
   }
-  sFilteredVelocityQ8 = sVelocityFilterStateQ16 / 256;
+  sVelocityHistory[sVelocityHistoryIndex] = measuredVelocity;
+  int window = 1 << shift;
+  int64_t sum = 0;
+  for (int i=0;i<window;i++)
+    sum += sVelocityHistory[(sVelocityHistoryIndex + 16 - i) & 15];
+  sVelocityHistoryIndex = (sVelocityHistoryIndex + 1) & 15;
+  /* Average only P's measurement, preserving fractional velocity in Q8.
+   * Two samples add 0.5 tick group delay, and exactly cancel alternating
+   * one-count differences. Position, reference, I and fault input stay raw. */
+  sFilteredVelocityQ8 = sum * 256 / window;
   sLastVelocityTarget = (int32_t)(targetQ8 / 256);
   int64_t errorQ8 = targetQ8 - measuredQ8;
   sLastVelocityReferenceQ8 = targetQ8;
@@ -164,7 +170,7 @@ int32_t ControlVelocityTick(int32_t velocityTarget, int32_t velocityActual, uint
 void ControlReset(void) {
   sVelIntegralQ16 = 0;
   sFilteredVelocityQ8 = 0;
-  sVelocityFilterStateQ16 = 0;
+  sVelocityHistoryIndex = 0;
   sVelocityFilterInitialized = 0;
   sPreviousReferenceVelocityQ8 = 0;
   sReferenceAccelerationQ8 = 0;
