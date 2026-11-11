@@ -227,6 +227,10 @@ static void ApplyConfigToModules(void) {
     .torqueClampMax = sConfig.torqueClampMax,
     .velocityErrorDeadbandCounts = sConfig.velocityErrorDeadbandCounts,
   };
+  /* Publish module settings together: the 1kHz ISR must not read a torn
+   * ControlGains copy or half-updated filter/ramp/fault configuration. */
+  uint32_t primask = __get_PRIMASK();
+  __disable_irq();
   ControlSetGains(&gains);
   FaultSetFollowingErrorConfig(sConfig.followingErrorLimitCounts, sConfig.followingErrorHardFault);
   FaultSetSustainedCurrentConfig(sConfig.sustainedCurrentMinTorque, sConfig.sustainedCurrentWindowTicks);
@@ -234,6 +238,7 @@ static void ApplyConfigToModules(void) {
   AnalogVelocitySetConfig(sConfig.analogVelocityScaleQ8, sConfig.analogVelocityHysteresisCounts);
   RampSetAcceleration(&sRamp, sConfig.rampAccelCountsPerTickPerSec);
   RampSetJerk(&sRamp, sConfig.velocityJerk);
+  __set_PRIMASK(primask);
 }
 
 ServoMode AppGetServoMode(void) { return sMode; }
@@ -253,6 +258,8 @@ int AppSetServoMode(ServoMode mode) {
 
 int  AppGetEnabled(void) { return sEnabled; }
 void AppSetEnabled(int enabled) {
+  uint32_t primask = __get_PRIMASK();
+  __disable_irq();
   sEnabled = enabled ? 1 : 0;
   sConfig.enabled = (uint8_t)sEnabled;   /* live-only -- `config save` persists it */
   if (sEnabled) {
@@ -264,6 +271,7 @@ void AppSetEnabled(int enabled) {
     /* Deliberately NOT PositionMoveInit()'d here, unlike AppSetServoMode() --
        disabling mid-move is a pause, not a cancel. */
   }
+  __set_PRIMASK(primask);
 }
 
 OutputTopology AppGetOutputTopology(void) { return sOutputTopology; }
@@ -617,7 +625,15 @@ void     AppRlsApply(void) {}
 
 void AppSignalStart(SignalType type, SignalTarget target, int32_t amplitude,
                      uint32_t halfPeriodTicks, uint32_t durationTicks) {
-  if (FaultIsLatched()) return;   /* can't run a test signal while faulted */
+  /* SignalStart initializes several fields including elapsed ticks. Never
+   * let the ISR observe a newly active signal with its old expired counter,
+   * nor a partially reset 64-bit PI/filter state. Preserve the caller's mask. */
+  uint32_t primask = __get_PRIMASK();
+  __disable_irq();
+  if (FaultIsLatched()) {
+    __set_PRIMASK(primask);
+    return;   /* can't run a test signal while faulted */
+  }
   FaultClear();   /* see AppPolarityLearn()'s comment -- fresh test, fresh window */
   int32_t amp = amplitude;
   if (target == SIGNAL_TARGET_TORQUE) {
@@ -629,6 +645,7 @@ void AppSignalStart(SignalType type, SignalTarget target, int32_t amplitude,
     ControlReset();   /* don't inherit a stale PI integrator from before */
   }
   SignalStart(type, target, amp, halfPeriodTicks, durationTicks);
+  __set_PRIMASK(primask);
 }
 void       AppSignalStop(void) { SignalStop(); }
 int        AppGetSignalActive(void) { return SignalIsActive(); }

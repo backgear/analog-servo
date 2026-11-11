@@ -40,7 +40,8 @@ void SignalInit(void);
 /* Starts a new signal, replacing any signal already running. halfPeriodTicks
  * is ignored for SIGNAL_IMPULSE. durationTicks caps the total run length
  * (0 = run until SignalStop() is called); ignored for SIGNAL_IMPULSE, which
- * always self-stops after its one tick. */
+ * always self-stops after its one tick. Callers must serialize startup
+ * with SignalTick(); AppSignalStart does so with the common interrupt mask. */
 void SignalStart(SignalType type, SignalTarget target, int32_t amplitude,
                   uint32_t halfPeriodTicks, uint32_t durationTicks);
 void SignalStop(void);
