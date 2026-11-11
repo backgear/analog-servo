@@ -26,6 +26,7 @@ def main():
     frames, fault, stop = [], threading.Event(), threading.Event()
     worker = threading.Thread(target=reader_thread, args=(mon, frames, fault, stop), daemon=True)
     limits = None
+    result = None
     try:
         if cli_get(cli, 'fault.latched') != '0' or cli_get(cli, 'input.source') != 'host':
             raise RuntimeError('requires fault-free host mode')
@@ -63,6 +64,10 @@ def main():
             cli_cmd(cli, 'set torque.max ' + limits[1], .05)
         with open(args.out, 'w') as target:
             json.dump(frames, target)
+        with open(args.out + '.meta.json', 'w') as target:
+            json.dump(dict(amplitude=args.amplitude, hold_ticks=args.hold,
+                           duration_ticks=args.ticks, result=result,
+                           completed=result == '2'), target, indent=2)
         mon.close()
         cli.close()
         print(f'{len(frames)} frames saved to {args.out}')

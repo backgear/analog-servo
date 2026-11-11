@@ -52,6 +52,55 @@ def estimate(frames, tick_hz=1000, nperseg=1024):
     return freq, h, coherence, len(spectra)
 
 
+def estimate_closed_loop(frames, tick_hz=1000, nperseg=512):
+    """Reference-based estimate S_dy/S_du and separate d->u/d->y coherence.
+
+    Only marked excitation samples are used. Torque must already be in axis
+    coordinates (F103 bench polarity is +1). Output is velocity in counts/s.
+    Coherence is a data-quality diagnostic, not a stability certificate.
+    """
+    import numpy as np
+    from scipy.signal import csd, welch
+
+    if tick_hz <= 0 or nperseg < 8:
+        raise ValueError('positive tick rate and segment length >= 8 required')
+    spectra = []
+    excited = [f for f in frames if f.get('excitation', False)]
+    for run in contiguous_runs(excited):
+        for start in range(0, len(run) - nperseg + 1, nperseg // 2):
+            segment = run[start:start + nperseg]
+            if any(f['fault_latched'] or not f['enabled'] or not f['hw_enable'] for f in segment):
+                continue
+            d = np.array([f['injected_torque'] for f in segment], dtype=float)
+            u = np.array([f['torque'] for f in segment], dtype=float)
+            y = np.array([f['velocity'] for f in segment], dtype=float) * tick_hz
+            if np.ptp(d) == 0:
+                continue
+            kw = dict(fs=tick_hz, nperseg=nperseg, noverlap=0, detrend='constant')
+            freq, sdd = welch(d, **kw)
+            _, suu = welch(u, **kw)
+            _, syy = welch(y, **kw)
+            _, sdu = csd(d, u, **kw)
+            _, sdy = csd(d, y, **kw)
+            spectra.append((sdd, suu, syy, sdu, sdy))
+    if len(spectra) < 2:
+        raise ValueError('need at least two excited, contiguous, interlocked windows')
+    sdd, suu, syy, sdu, sdy = np.mean(np.array(spectra), axis=0)
+    sdd, suu, syy = sdd.real, suu.real, syy.real
+    valid = (sdd > max(sdd.max() * 1e-6, 0)) & (abs(sdu) > 0) & (freq > 0)
+    h = np.full(sdy.shape, complex(float('nan'), 0))
+    h[valid] = sdy[valid] / sdu[valid]
+    def coherence(cross, power):
+        result = np.full(freq.shape, float('nan'))
+        ok = valid & (power > 0)
+        result[ok] = np.clip(abs(cross[ok])**2 / (sdd[ok] * power[ok]), 0, 1)
+        return result
+    return dict(frequency=freq, response=h, coherence_input=coherence(sdu, suu),
+                coherence_motion=coherence(sdy, syy), injection_psd=sdd,
+                windows=len(spectra), excited_frames=len(excited),
+                runs=len(contiguous_runs(excited)))
+
+
 def main():
     import csv
     import numpy as np
