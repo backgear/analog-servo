@@ -405,6 +405,12 @@ static void test_moving_excitation_stop_request(void) {
 
 static void test_direct_torque_mode(void) {
   ExcitationStop(3); (void)ExcitationTakeMotionStop();
+  TEST_ASSERT_EQUAL(-1, ExcitationStartTorque(10001, 10, 1000, 2000, 20, 0));
+  TEST_ASSERT_EQUAL(-1, ExcitationStart(2001, 10, 1000, 2000, 20, 0));
+  TEST_ASSERT_EQUAL(0, ExcitationStartTorque(10000, 10, 1000, 10000, 100, 0));
+  int32_t peak = ExcitationTick(0, 0, 1);
+  TEST_ASSERT_EQUAL(10000, peak < 0 ? -peak : peak);
+  ExcitationStop(3);
   TEST_ASSERT_EQUAL(0, ExcitationStartTorque(500, 10, 1000, 2000, 20, 0));
   TEST_ASSERT_TRUE(ExcitationTorqueMode());
   TEST_ASSERT_EQUAL(0, ExcitationExpectedVelocity());

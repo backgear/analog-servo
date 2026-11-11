@@ -28,7 +28,7 @@ static int Start(int32_t amplitude, uint32_t hold, uint32_t duration,
                  int32_t travel, int32_t speed, int32_t position,
                  int32_t commandedVelocity, int torqueMode) {
   int moving = commandedVelocity != 0;
-  if (sActive || sStopMotion || amplitude < 1 || amplitude > (moving ? 500 : 2000) ||
+  if (sActive || sStopMotion || amplitude < 1 || amplitude > (torqueMode ? 10000 : moving ? 500 : 2000) ||
       hold < 1 || hold > 100 ||
       duration < 2 * hold || duration > (moving ? 10000U : 30000U) || duration % (2 * hold) ||
       travel < 1 || travel > (moving ? 250000 : 10000) || speed < 1 ||

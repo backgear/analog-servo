@@ -10,7 +10,7 @@ import gzip
 import json
 from pathlib import Path
 import numpy as np
-from identify_spectrum import estimate_closed_loop
+from identify_spectrum import estimate_closed_loop, contiguous_runs
 
 
 def main():
@@ -37,18 +37,20 @@ def main():
         meta_path = Path(path + '.meta.json')
         metadata = json.loads(meta_path.read_text()) if meta_path.exists() else {}
         complete = metadata.get('completed', False)
-        label = f'{Path(path).stem}: +/-{amp}'
+        runs = contiguous_runs(e)
+        label = f'+/-{amp}, hold {metadata.get("hold_ticks", "?")} ticks ({len(runs)} bursts)'
         if not complete:
             label += ' [incomplete/unverified]'
         f, h = result['frequency'], result['response']
         ci, cy = result['coherence_input'], result['coherence_motion']
-        good = (ci >= .8) & (cy >= .8) & (f > 0) & (f <= 150)
+        good = (ci >= .8) & (cy >= .8) & (f > 0) & (f <= 250)
         if not complete or result['windows'] < 8:
             good[:] = False
-        t = np.array([((r['seq'] - e[0]['seq']) & 0xffffffff) / 1000 for r in e])
-        position = np.array([r['position'] - e[0]['position'] for r in e])
         color = f'C{index}'
-        axes[0].plot(t, position, color=color, label=label, alpha=.7)
+        for burst, run in enumerate(runs):
+            t = np.array([((r['seq'] - run[0]['seq']) & 0xffffffff) / 1000 for r in run])
+            position = np.array([r['position'] - run[0]['position'] for r in run])
+            axes[0].plot(t, position, color=color, label=label if burst == 0 else None, alpha=.6)
         axes[1].semilogy(f[1:], result['injection_psd'][1:], color=color, label=label)
         axes[2].semilogx(f[1:], abs(h[1:]), color=color, alpha=.3)
         axes[2].semilogx(f[good], abs(h[good]), '.', color=color, label=label)
@@ -66,13 +68,14 @@ def main():
         summary = dict(capture=str(path), amplitude=amp, metadata=metadata,
                        frames=result['excited_frames'], runs=result['runs'], windows=result['windows'],
                        position_range=[min(r['position'] for r in e), max(r['position'] for r in e)],
+                       burst_position_spans=[max(r['position'] for r in run) - min(r['position'] for r in run) for run in runs],
                        velocity_range=[min(r['velocity'] for r in e), max(r['velocity'] for r in e)],
                        torque_range=[min(r['torque'] for r in e), max(r['torque'] for r in e)],
-                       high_coherence_bins_below_150_hz=f[good].tolist(),
+                       high_coherence_bins_below_150_hz=f[good & (f <= 150)].tolist(),
                        median_motion_coherence_5_to_100=float(np.nanmedian(cy[(f >= 5) & (f <= 100)])))
         summaries.append(summary)
     for axis, title, ylabel in zip(axes,
-            ['Encoder motion during excitation', 'Injected signal spectrum',
+            ['Encoder motion (bursts overlaid; each starts at zero)', 'Injected signal spectrum',
              'Estimated torque-to-velocity gain (dots: both coherences >=0.8)',
              'Estimated phase (faint traces are not necessarily trustworthy)',
              'Reference coherence: solid motion, dashed total torque'],
@@ -82,6 +85,7 @@ def main():
         axis.grid(True, alpha=.25)
     axes[0].set_xlabel('Time (s)')
     axes[0].legend(fontsize=8)
+    axes[2].set_yscale('log')
     axes[1].set_xlim(0, 250)
     axes[1].set_xlabel('Frequency (Hz)')
     for axis in axes[2:]:

@@ -35,8 +35,11 @@ def main():
         ap.error('torque limit must be within 1..10000')
     if abs(args.velocity) > 20 or (args.velocity and args.amplitude > 500):
         ap.error('moving tests require velocity within +/-20 and amplitude <=500')
-    if not 1 <= args.amplitude <= 1000 or not 1 <= args.hold <= 100 or not 1 <= args.ticks <= 10000 or args.ticks % (2*args.hold):
-        ap.error('require amplitude 1..1000, hold 1..100, duration <=10000 and divisible by 2*hold')
+    max_amplitude = 10000 if args.direct_torque else 1000
+    if not 1 <= args.amplitude <= max_amplitude or not 1 <= args.hold <= 100 or not 1 <= args.ticks <= 10000 or args.ticks % (2*args.hold):
+        ap.error('invalid amplitude, hold 1..100, duration <=10000 and divisible by 2*hold required')
+    if args.direct_torque and args.amplitude >= 3276 and args.ticks > 1000:
+        ap.error('high-amplitude direct tests are limited to one-second bursts; do not bypass sustained-torque protection')
     cli = serial.Serial('/dev/ttyACM1', timeout=.1)
     mon = serial.Serial('/dev/ttyACM2', timeout=.05)
     frames, fault, stop = [], threading.Event(), threading.Event()
@@ -53,6 +56,8 @@ def main():
             raise RuntimeError('requires bipolar entry torque clamps')
         temporary_min = max(int(limits[0]), -args.torque_limit)
         temporary_max = min(int(limits[1]), args.torque_limit)
+        if args.amplitude > min(-temporary_min, temporary_max):
+            raise RuntimeError('requested amplitude exceeds entry/temporary clamps')
         setup = [f'set torque.min {temporary_min}', f'set torque.max {temporary_max}']
         if cli_get(cli, 'axis.enabled') != '1':
             setup.append('enable')
@@ -74,10 +79,17 @@ def main():
                 raise RuntimeError('failed to establish steady moving baseline')
             travel = min(250000, abs(args.velocity) * (args.ticks + 500))
             speed, mode = min(30, abs(args.velocity) + 5), 'moving'
-        response = cli_cmd(cli, f'excite {mode} {args.amplitude} {args.hold} {args.ticks} {travel} {speed}', .05)
-        print(response)
-        if 'state=running' not in response:
-            raise RuntimeError(response)
+        start_command = f'excite {mode} {args.amplitude} {args.hold} {args.ticks} {travel} {speed}'
+        for attempt in range(5):
+            response = cli_cmd(cli, start_command, .05)
+            print(response)
+            if 'state=running' in response:
+                break
+            # Encoder-boundary jitter can reject an otherwise stationary start.
+            # Retry only this explicit refusal, never an ambiguous/no reply.
+            if 'error=excitation requires steady enabled host operation' not in response or attempt == 4:
+                raise RuntimeError(response)
+            time.sleep(.1)
         deadline = time.monotonic() + args.ticks / 1000 + 1
         while time.monotonic() < deadline:
             if fault.is_set():
