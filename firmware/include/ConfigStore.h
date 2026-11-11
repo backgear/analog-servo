@@ -62,7 +62,8 @@ typedef struct {
   int32_t posGainQ8, velGainKpQ8, velGainKiQ8;
   int32_t torqueClampMin, torqueClampMax, velocityClamp;
   int32_t positionMoveFeedforwardQ8; /* 0..256; velocity/acceleration FF scale for point moves */
-  int32_t velocityFilterShift;       /* 0 raw; 1..4 causal estimator alpha=2^-shift */
+  int32_t velocityFilterShift;       /* P feedback only: 0 raw; 1..4 IIR alpha=2^-shift.
+                                          I and encoder position remain unfiltered. */
   int32_t accelerationFeedforwardQ8;  /* torque / (counts/tick^2), Q8; 0 disables */
   int32_t velocityJerk;              /* counts/tick/sec^2; 0 retains trapezoidal jogs */
   int32_t commandVelocityClamp;      /* 0 follows velocityClamp; otherwise trajectory speed cap */

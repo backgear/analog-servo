@@ -349,6 +349,51 @@ static void test_velocity_filter_is_causal_and_resets(void) {
   TEST_ASSERT_EQUAL_INT32(0, ControlVelocityTick(0,0,1000));
 }
 
+static void test_p_filter_does_not_discard_or_repeatedly_integrate_counts(void) {
+  ControlGains g=*ControlGetGains();
+  g.velGainKpQ8=0; g.velGainKiQ8=256; g.velocityFilterShift=4;
+  g.velocityErrorDeadbandCounts=1;
+  ControlInit(&g);
+  ControlVelocityTick(0,0,1000);
+  TEST_ASSERT_EQUAL_INT32(-1,ControlVelocityTick(0,1,1000));
+  for (int i=0;i<1000;i++)
+    TEST_ASSERT_EQUAL_INT32(-1,ControlVelocityTick(0,0,1000));
+  TEST_ASSERT_EQUAL_INT32(0,ControlVelocityTick(0,-1,1000));
+  for (int i=0;i<1000;i++)
+    TEST_ASSERT_EQUAL_INT32(0,ControlVelocityTick(0,0,1000));
+}
+
+static void test_p_filter_preserves_reference_and_decays_without_bias(void) {
+  ControlGains g=*ControlGetGains();
+  g.velGainKpQ8=65536; g.velGainKiQ8=0; g.velocityErrorDeadbandCounts=0;
+  for (int shift=1;shift<=4;shift++) {
+    g.velocityFilterShift=shift;
+    for (int sign=-1;sign<=1;sign+=2) {
+      ControlInit(&g);
+      ControlVelocityTick(0,0,1000);
+      /* Only measured feedback is filtered: a changed reference is immediate. */
+      TEST_ASSERT_EQUAL_INT32(sign*256,ControlVelocityTick(sign,0,1000));
+      ControlVelocityTick(0,sign,1000);
+      int32_t output=0;
+      for (int i=0;i<256;i++) output=ControlVelocityTick(0,0,1000);
+      TEST_ASSERT_EQUAL_INT32(0,output);
+    }
+  }
+}
+
+static void test_filtered_p_antiwindup_uses_raw_integral_error(void) {
+  ControlGains g=*ControlGetGains();
+  g.velGainKpQ8=256; g.velGainKiQ8=256;
+  g.velocityFilterShift=1; g.velocityErrorDeadbandCounts=0;
+  g.torqueClampMin=-10;g.torqueClampMax=10;
+  ControlInit(&g);
+  ControlVelocityTick(0,0,1000);
+  TEST_ASSERT_EQUAL_INT32(-10,ControlVelocityTick(0,20,1000));
+  /* Filtered measurement is now zero, but raw -10 must integrate +10. */
+  TEST_ASSERT_EQUAL_INT32(10,ControlVelocityTick(0,-10,1000));
+  TEST_ASSERT_EQUAL_INT32(10,ControlVelocityTick(0,0,1000));
+}
+
 static void test_acceleration_feedforward_uses_current_ramp_change(void) {
   ControlGains g=*ControlGetGains(); g.velGainKiQ8=0; g.accelerationFeedforwardQ8=2560;
   ControlInit(&g);
@@ -409,7 +454,7 @@ static void test_velocity_diagnostics_match_filter_and_deadband(void) {
   ControlGetVelocitySample(&sample);
   TEST_ASSERT_EQUAL_INT32(20,sample.reference);
   TEST_ASSERT_EQUAL_INT32(5,sample.filtered);
-  TEST_ASSERT_EQUAL_INT32(15,sample.error);
+  TEST_ASSERT_EQUAL_INT32(10,sample.error);
   TEST_ASSERT_EQUAL_INT32(8,sample.controlError);
   ControlReset(); ControlGetVelocitySample(&sample);
   TEST_ASSERT_EQUAL_INT32(0,sample.reference);
@@ -497,6 +542,9 @@ int main(void) {
   RUN_TEST(test_fractional_position_error_is_symmetric_and_nonzero);
   RUN_TEST(test_fractional_integral_accumulates_both_signs);
   RUN_TEST(test_velocity_filter_is_causal_and_resets);
+  RUN_TEST(test_p_filter_does_not_discard_or_repeatedly_integrate_counts);
+  RUN_TEST(test_p_filter_preserves_reference_and_decays_without_bias);
+  RUN_TEST(test_filtered_p_antiwindup_uses_raw_integral_error);
   RUN_TEST(test_velocity_feedforward_tracks_without_position_lag);
   RUN_TEST(test_feedforward_adds_feedback_and_clamps_total);
   RUN_TEST(test_step_response_converges);

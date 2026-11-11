@@ -20,7 +20,9 @@ typedef struct {
   int32_t velocityClamp;    /* combined reference + feedback velocity target cap */
   int32_t torqueClampMin, torqueClampMax;
   int32_t accelerationFeedforwardQ8; /* torque per counts/tick^2, Q8 */
-  int32_t velocityFilterShift; /* 0 raw; 1..4 causal IIR alpha=1/(2^shift) */
+  int32_t velocityFilterShift; /* P's measured velocity only: 0 raw;
+                                    1..4 causal IIR alpha=1/(2^shift).
+                                    Position, reference and I remain unfiltered. */
   int32_t velocityErrorDeadbandCounts; /* Soft P noise-band width in counts/tick.
                                            0 disables (default). P uses
                                            e - clamp(e,-width,width)/2: half gain
@@ -32,7 +34,8 @@ typedef struct {
 } ControlGains;
 
 /* Readbacks use whole encoder counts/tick, rounded symmetrically from Q8.
- * error is the full PI error; controlError is the shaped P error only.
+ * filtered is P's velocity estimate; error is reference minus RAW velocity
+ * (I's input); controlError is reference minus filtered, after P shaping.
  * The integrator always uses error, not controlError. */
 typedef struct {
   int32_t reference, filtered, error, controlError;

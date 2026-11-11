@@ -34,6 +34,9 @@ static ControlGains sGains = {
  * persistent fractional corrections are not discarded. See Control.h. */
 static int64_t sVelIntegralQ16 = 0;
 static int64_t sFilteredVelocityQ8 = 0;
+/* Extra precision lets P's Q8 readout decay to zero after an isolated count,
+ * rather than sticking at a fractional Q8 LSB through integer division. */
+static int64_t sVelocityFilterStateQ16 = 0;
 static int sVelocityFilterInitialized = 0;
 static int64_t sPreviousReferenceVelocityQ8 = 0;
 static int64_t sReferenceAccelerationQ8 = 0;
@@ -46,6 +49,7 @@ void ControlInit(const ControlGains *gains) {
   if (gains) sGains = *gains;
   sVelIntegralQ16 = 0;
   sFilteredVelocityQ8 = 0;
+  sVelocityFilterStateQ16 = 0;
   sVelocityFilterInitialized = 0;
   sPreviousReferenceVelocityQ8 = 0;
   sReferenceAccelerationQ8 = 0;
@@ -72,26 +76,27 @@ static int32_t VelocityTickQ8(int64_t targetQ8, int32_t measuredVelocity, int64_
   int64_t measuredQ8 = (int64_t)measuredVelocity * 256;
   int shift = sGains.velocityFilterShift;
   if (!sVelocityFilterInitialized || shift <= 0) {
-    sFilteredVelocityQ8 = measuredQ8;
+    sVelocityFilterStateQ16 = measuredQ8 * 256;
     sVelocityFilterInitialized = 1;
   } else {
-    /* Causal one-pole estimator; shift=1 means alpha=1/2. Raw velocity
-     * remains available to monitor/fault logic. Filtering adds delay, so
-     * it is disabled by default and must earn its place on the bench. */
+    /* Causal P-feedback estimator; shift=1 means alpha=1/2. Do not filter
+     * position, reference, I's measurement, or fault/monitor velocity.
+     * Filtering adds delay, so it remains disabled by default. */
     if (shift > 4) shift = 4;
-    sFilteredVelocityQ8 += (measuredQ8 - sFilteredVelocityQ8) / (1 << shift);
+    sVelocityFilterStateQ16 += (measuredQ8 * 256 - sVelocityFilterStateQ16) / (1 << shift);
   }
+  sFilteredVelocityQ8 = sVelocityFilterStateQ16 / 256;
   sLastVelocityTarget = (int32_t)(targetQ8 / 256);
-  int64_t errorQ8 = targetQ8 - sFilteredVelocityQ8;
+  int64_t errorQ8 = targetQ8 - measuredQ8;
   sLastVelocityReferenceQ8 = targetQ8;
   sLastVelocityErrorQ8 = errorQ8;
-  int64_t pErrorQ8 = errorQ8;
+  int64_t pErrorQ8 = targetQ8 - sFilteredVelocityQ8;
   if (sGains.velocityErrorDeadbandCounts > 0) {
     int64_t bandQ8 = (int64_t)sGains.velocityErrorDeadbandCounts * 256;
     /* Continuous soft band: half slope inside, normal slope outside, with
      * no boundary jump. Signed division keeps the mapping symmetric; Q8
      * rounding can retain one extra fractional LSB. Never modify I's error. */
-    pErrorQ8 -= Clamp64(errorQ8, -bandQ8, bandQ8) / 2;
+    pErrorQ8 -= Clamp64(pErrorQ8, -bandQ8, bandQ8) / 2;
   }
   sLastControlErrorQ8 = pErrorQ8;
   int64_t pQ16 = pErrorQ8 * sGains.velGainKpQ8;
@@ -159,6 +164,7 @@ int32_t ControlVelocityTick(int32_t velocityTarget, int32_t velocityActual, uint
 void ControlReset(void) {
   sVelIntegralQ16 = 0;
   sFilteredVelocityQ8 = 0;
+  sVelocityFilterStateQ16 = 0;
   sVelocityFilterInitialized = 0;
   sPreviousReferenceVelocityQ8 = 0;
   sReferenceAccelerationQ8 = 0;
