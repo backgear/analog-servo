@@ -11,13 +11,18 @@
  * (torque gains are consequential enough to want a review, unlike
  * polarity-learn's sign, which auto-commits).
  *
- * This is the project's only autotune method. An open-loop step-response
- * method and a closed-loop local-search refine method are intentionally not
- * provided here: a step input's safety depends entirely on a mandatory
- * operator-supplied velocity ceiling (easy to get dangerously wrong on
- * unfamiliar hardware), and a local-search refine needs a well-defined
- * abort/convergence condition that's easy to get wrong in a way that never
- * terminates cleanly.
+ * A second method now exists alongside this one: RLS.c's online, in-move
+ * forgetting-factor estimator (AUTOTUNE_METHOD_RLS, picked at `autotune
+ * start rls ...`), which runs as a passive observer during normal moves
+ * rather than a dedicated bootstrap test like this one. An open-loop
+ * step-response method is still intentionally not provided: its safety
+ * depends entirely on a mandatory operator-supplied velocity ceiling, easy
+ * to get dangerously wrong on unfamiliar hardware. A closed-loop
+ * local-search refine method (needing a well-defined abort/convergence
+ * condition, easy to get wrong in a way that never terminates cleanly) was
+ * also kept off this project's device for a long time for that reason --
+ * RLS.c relaxes that bar deliberately, replacing a termination proof with
+ * physical clamps on its estimate instead; see RLS.h for the rationale.
  *
  * Takes an `amplitude`/torque value in the same raw TORQUE_FULL_SCALE units
  * as torque.min/max -- a DIGITAL PWM duty-cycle code, not a
@@ -64,6 +69,9 @@
 
 typedef enum {
   AUTOTUNE_METHOD_RELAY = 0,
+  AUTOTUNE_METHOD_RLS = 1,   /* RLS.c -- Autotune.c itself never reports this; Protocol.c tags
+                                 whichever engine is actually active with it, see
+                                 Protocol.c's getAutotuneMethod() */
 } AutotuneMethod;
 
 typedef enum {

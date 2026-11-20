@@ -69,6 +69,18 @@ uint32_t AppAutotuneGetRelayProgressMaxTicks(void) { return 0; }
 uint32_t AppAutotuneGetRelayProgressSwitchCount(void) { return 0; }
 uint32_t AppAutotuneGetRelayProgressSwitchesNeeded(void) { return 0; }
 int32_t  AppAutotuneGetRelayProgressPeakVelocity(void) { return 0; }
+void    AppRlsStart(int32_t lambdaQ8, uint32_t glideMs) { (void)lambdaQ8; (void)glideMs; }
+void    AppRlsStop(void) {}
+int     AppRlsBusy(void) { return 0; }
+AutotuneResult AppRlsGetResult(void) { return AUTOTUNE_RESULT_NONE; }
+int32_t  AppRlsGetKpResultQ8(void) { return 0; }
+int32_t  AppRlsGetKiResultQ8(void) { return 0; }
+int32_t  AppRlsGetThetaAQ8(void) { return 0; }
+int32_t  AppRlsGetThetaBQ8(void) { return 0; }
+int64_t  AppRlsGetPTrace(void) { return 0; }
+uint32_t AppRlsGetTicksObserved(void) { return 0; }
+uint32_t AppRlsGetProgressSeq(void) { return 0; }
+void     AppRlsApply(void) {}
 void     AppAutotuneApply(void) {}
 void       AppSignalStart(SignalType t, SignalTarget tg, int32_t amp, uint32_t hp, uint32_t dur) {
   (void)t; (void)tg; (void)amp; (void)hp; (void)dur;

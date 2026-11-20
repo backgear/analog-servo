@@ -157,6 +157,33 @@ uint32_t AppAutotuneGetRelayProgressSwitchCount(void) { return sAutotuneRelayPro
 uint32_t AppAutotuneGetRelayProgressSwitchesNeeded(void) { return sAutotuneRelayProgressSwitchesNeeded; }
 int32_t  AppAutotuneGetRelayProgressPeakVelocity(void) { return sAutotuneRelayProgressPeakVelocity; }
 
+static int      sRlsStartCalls = 0, sRlsStopCalls = 0, sRlsApplyCalls = 0;
+static int32_t  sRlsLastLambdaQ8 = 0;
+static uint32_t sRlsLastGlideMs = 0;
+static int      sRlsActive = 0;
+static AutotuneResult sRlsResult = AUTOTUNE_RESULT_NONE;
+static int32_t  sRlsKpResult = 0, sRlsKiResult = 0, sRlsThetaA = 0, sRlsThetaB = 0;
+static int64_t  sRlsPTrace = 0;
+static uint32_t sRlsTicksObserved = 0, sRlsProgressSeq = 0;
+
+void AppRlsStart(int32_t lambdaQ8, uint32_t glideMs) {
+  sRlsStartCalls++;
+  sRlsLastLambdaQ8 = lambdaQ8;
+  sRlsLastGlideMs = glideMs;
+  sRlsActive = 1;
+}
+void    AppRlsStop(void) { sRlsStopCalls++; sRlsActive = 0; }
+int     AppRlsBusy(void) { return sRlsActive; }
+AutotuneResult AppRlsGetResult(void) { return sRlsResult; }
+int32_t  AppRlsGetKpResultQ8(void) { return sRlsKpResult; }
+int32_t  AppRlsGetKiResultQ8(void) { return sRlsKiResult; }
+int32_t  AppRlsGetThetaAQ8(void) { return sRlsThetaA; }
+int32_t  AppRlsGetThetaBQ8(void) { return sRlsThetaB; }
+int64_t  AppRlsGetPTrace(void) { return sRlsPTrace; }
+uint32_t AppRlsGetTicksObserved(void) { return sRlsTicksObserved; }
+uint32_t AppRlsGetProgressSeq(void) { return sRlsProgressSeq; }
+void     AppRlsApply(void) { sRlsApplyCalls++; }
+
 /* ---- Encoder.c stubs -------------------------------------------------------- */
 static int32_t sPosition = 0;
 static int     sZSeen = 0;
@@ -254,6 +281,14 @@ void setUp(void) {
   sAutotuneRelayProgressSwitchCount = 0U;
   sAutotuneRelayProgressSwitchesNeeded = 0U;
   sAutotuneRelayProgressPeakVelocity = 0;
+  sRlsStartCalls = sRlsStopCalls = sRlsApplyCalls = 0;
+  sRlsLastLambdaQ8 = 0;
+  sRlsLastGlideMs = 0;
+  sRlsActive = 0;
+  sRlsResult = AUTOTUNE_RESULT_NONE;
+  sRlsKpResult = sRlsKiResult = sRlsThetaA = sRlsThetaB = 0;
+  sRlsPTrace = 0;
+  sRlsTicksObserved = sRlsProgressSeq = 0U;
   sLastVelocityActual = sLastTorqueCommand = 0;
   sPosition = 0;
   sZSeen = 0;
@@ -896,6 +931,163 @@ static void test_autotune_result_names(void) {
   TEST_ASSERT_NOT_NULL(strstr(cap, "autotune.result=bad_measurement"));
 }
 
+static void test_autotune_start_rls_defaults(void) {
+  run("autotune start rls");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "state=running"));
+  TEST_ASSERT_EQUAL_INT(1, sRlsStartCalls);
+  TEST_ASSERT_EQUAL_INT32(256, sRlsLastLambdaQ8);     /* RLS_DEFAULT_LAMBDA_Q8 */
+  TEST_ASSERT_EQUAL_UINT32(2000U, sRlsLastGlideMs);   /* RLS_DEFAULT_GLIDE_MS */
+}
+
+static void test_autotune_start_rls_explicit_args(void) {
+  run("autotune start rls 200 500");
+  TEST_ASSERT_EQUAL_INT(1, sRlsStartCalls);
+  TEST_ASSERT_EQUAL_INT32(200, sRlsLastLambdaQ8);
+  TEST_ASSERT_EQUAL_UINT32(500U, sRlsLastGlideMs);
+}
+
+static void test_autotune_start_rls_invalid_lambda(void) {
+  run("autotune start rls bogus");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "error=invalid lambda_q8"));
+  TEST_ASSERT_EQUAL_INT(0, sRlsStartCalls);
+}
+
+static void test_autotune_start_rls_invalid_glide_ms(void) {
+  run("autotune start rls 256 bogus");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "error=invalid glide_ms"));
+  TEST_ASSERT_EQUAL_INT(0, sRlsStartCalls);
+}
+
+static void test_autotune_start_rls_rejected_while_relay_busy(void) {
+  sAutotuneActive = 1;
+  run("autotune start rls");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "error=relay is already running -- stop it first"));
+  TEST_ASSERT_EQUAL_INT(0, sRlsStartCalls);
+}
+
+static void test_autotune_start_relay_rejected_while_rls_busy(void) {
+  sConfig.polarityLearned = 1;
+  sRlsActive = 1;
+  run("autotune start relay 2000");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "error=rls is already running -- stop it first"));
+  TEST_ASSERT_EQUAL_INT(0, sAutotuneStartRelayCalls);
+}
+
+static void test_autotune_start_rls_rejected_while_fault_latched(void) {
+  FaultEndstopIsr();
+  run("autotune start rls");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "error=clear the latched fault before autotune start rls"));
+  TEST_ASSERT_EQUAL_INT(0, sRlsStartCalls);
+}
+
+static void test_autotune_stop_stops_both_engines(void) {
+  run("autotune start rls");
+  run("autotune stop");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "state=stopped"));
+  TEST_ASSERT_EQUAL_INT(1, sAutotuneStopCalls);
+  TEST_ASSERT_EQUAL_INT(1, sRlsStopCalls);
+}
+
+static void test_autotune_apply_prefers_rls_result_when_ok(void) {
+  sRlsResult = AUTOTUNE_RESULT_OK;
+  sAutotuneResult = AUTOTUNE_RESULT_OK;   /* both have a live result -- rls wins, see
+                                              cmdAutotune()'s comment on why */
+  run("autotune apply");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "state=applied"));
+  TEST_ASSERT_EQUAL_INT(1, sRlsApplyCalls);
+  TEST_ASSERT_EQUAL_INT(0, sAutotuneApplyCalls);
+}
+
+static void test_autotune_apply_falls_back_to_relay_when_rls_not_ok(void) {
+  sRlsResult = AUTOTUNE_RESULT_BAD_MEASUREMENT;
+  sAutotuneResult = AUTOTUNE_RESULT_OK;
+  run("autotune apply");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "state=applied"));
+  TEST_ASSERT_EQUAL_INT(0, sRlsApplyCalls);
+  TEST_ASSERT_EQUAL_INT(1, sAutotuneApplyCalls);
+}
+
+static void test_autotune_method_and_result_report_rls_while_active(void) {
+  sRlsActive = 1;
+  sRlsResult = AUTOTUNE_RESULT_OK;
+  sRlsKpResult = 231;
+  sRlsKiResult = 44;
+  capReset(); run("get autotune.method");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "autotune.method=rls"));
+  capReset(); run("get autotune.result");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "autotune.result=ok"));
+  capReset(); run("get autotune.velocity_kp");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "autotune.velocity_kp=231"));
+  capReset(); run("get autotune.velocity_ki");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "autotune.velocity_ki=44"));
+  capReset(); run("get autotune.active");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "autotune.active=1"));
+}
+
+static void test_autotune_method_falls_back_to_relay_once_rls_idle_with_no_result(void) {
+  sRlsActive = 0;
+  sRlsResult = AUTOTUNE_RESULT_NONE;
+  sAutotuneMethod = AUTOTUNE_METHOD_RELAY;
+  capReset(); run("get autotune.method");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "autotune.method=relay"));
+}
+
+static void test_autotune_rls_telemetry_vars(void) {
+  sRlsActive = 1;
+  sRlsThetaA = 230;
+  sRlsThetaB = 26;
+  sRlsPTrace = 123456789012LL;
+  sRlsTicksObserved = 777;
+
+  capReset(); run("get autotune.rls_active");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "autotune.rls_active=1"));
+  capReset(); run("get autotune.rls_theta_a");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "autotune.rls_theta_a=230"));
+  capReset(); run("get autotune.rls_theta_b");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "autotune.rls_theta_b=26"));
+  capReset(); run("get autotune.rls_p_trace");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "autotune.rls_p_trace=123456789012"));
+  capReset(); run("get autotune.rls_ticks");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "autotune.rls_ticks=777"));
+}
+
+static void test_rls_progress_prints_on_new_seq(void) {
+  sRlsActive = 1;
+  sRlsProgressSeq = 1;
+  sRlsTicksObserved = 300;
+  sRlsThetaA = 230;
+  sRlsThetaB = 26;
+  sRlsKpResult = 231;
+  sRlsKiResult = 44;
+  sRlsPTrace = 2;
+
+  capReset();
+  ProtocolPoll();
+  TEST_ASSERT_NOT_NULL(strstr(cap, "autotune.rls_progress ticks=300 a=230 b=26 kp=231 ki=44 p_trace=2"));
+}
+
+static void test_rls_progress_not_reprinted_for_same_seq(void) {
+  sRlsActive = 1;
+  sRlsProgressSeq = 1;
+
+  capReset();
+  ProtocolPoll();
+  TEST_ASSERT_NOT_NULL(strstr(cap, "autotune.rls_progress"));
+
+  capReset();
+  ProtocolPoll();   /* same seq -- nothing new to print */
+  TEST_ASSERT_NULL(strstr(cap, "autotune.rls_progress"));
+}
+
+static void test_rls_progress_not_printed_when_idle(void) {
+  sRlsActive = 0;
+  sRlsProgressSeq = 99;
+
+  capReset();
+  ProtocolPoll();
+  TEST_ASSERT_NULL(strstr(cap, "autotune.rls_progress"));
+}
+
 static void test_config_save_ok(void) {
   sConfigSaveResult = 0;
   run("config save");
@@ -1249,6 +1441,22 @@ int main(void) {
   RUN_TEST(test_autotune_telemetry_vars);
   RUN_TEST(test_autotune_method_name_relay);
   RUN_TEST(test_autotune_result_names);
+  RUN_TEST(test_autotune_start_rls_defaults);
+  RUN_TEST(test_autotune_start_rls_explicit_args);
+  RUN_TEST(test_autotune_start_rls_invalid_lambda);
+  RUN_TEST(test_autotune_start_rls_invalid_glide_ms);
+  RUN_TEST(test_autotune_start_rls_rejected_while_relay_busy);
+  RUN_TEST(test_autotune_start_relay_rejected_while_rls_busy);
+  RUN_TEST(test_autotune_start_rls_rejected_while_fault_latched);
+  RUN_TEST(test_autotune_stop_stops_both_engines);
+  RUN_TEST(test_autotune_apply_prefers_rls_result_when_ok);
+  RUN_TEST(test_autotune_apply_falls_back_to_relay_when_rls_not_ok);
+  RUN_TEST(test_autotune_method_and_result_report_rls_while_active);
+  RUN_TEST(test_autotune_method_falls_back_to_relay_once_rls_idle_with_no_result);
+  RUN_TEST(test_autotune_rls_telemetry_vars);
+  RUN_TEST(test_rls_progress_prints_on_new_seq);
+  RUN_TEST(test_rls_progress_not_reprinted_for_same_seq);
+  RUN_TEST(test_rls_progress_not_printed_when_idle);
   RUN_TEST(test_config_save_ok);
   RUN_TEST(test_config_save_failure);
   RUN_TEST(test_config_load_ok);

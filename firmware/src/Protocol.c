@@ -153,8 +153,10 @@ static const char *AutotuneResultName(AutotuneResult r) {
   }
 }
 static const char *AutotuneMethodName(AutotuneMethod m) {
-  (void)m;   /* only AUTOTUNE_METHOD_RELAY exists today -- see Autotune.h */
-  return "relay";
+  switch (m) {
+    case AUTOTUNE_METHOD_RLS: return "rls";
+    default:                  return "relay";
+  }
 }
 
 static void getServoMode(char *b, size_t n) { snprintf(b, n, "%s", ServoModeName(AppGetServoMode())); }
@@ -393,20 +395,50 @@ static int  setMonitorFreezePostTicks(const char *v) {
   return 0;
 }
 
-static void getAutotuneActive(char *b, size_t n) { snprintf(b, n, "%d", AppAutotuneBusy()); }
-static void getAutotuneMethod(char *b, size_t n) { snprintf(b, n, "%s", AutotuneMethodName(AppAutotuneGetMethod())); }
-static void getAutotuneResult(char *b, size_t n) { snprintf(b, n, "%s", AutotuneResultName(AppAutotuneGetResult())); }
-static void getAutotuneKpResult(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppAutotuneGetKpResultQ8()); }
-static void getAutotuneKiResult(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppAutotuneGetKiResultQ8()); }
+/* relay and rls are mutually exclusive while running (cmdAutotuneStart()'s
+ * guards) -- whichever is busy right now wins; once both are idle, prefer
+ * whichever has a non-NONE result (relay by default, since it's checked
+ * last). autotune.pos_p/.plant_gain stay relay-only below: rls has no
+ * equivalent (it never estimates position.kp, see RLS.h), so there's
+ * nothing to share for those two. */
+static int RlsIsTheActiveEngine(void) {
+  if (AppRlsBusy()) return 1;
+  if (AppAutotuneBusy()) return 0;
+  return AppRlsGetResult() != AUTOTUNE_RESULT_NONE;
+}
+static void getAutotuneActive(char *b, size_t n) { snprintf(b, n, "%d", AppAutotuneBusy() || AppRlsBusy()); }
+static void getAutotuneMethod(char *b, size_t n) {
+  AutotuneMethod m = RlsIsTheActiveEngine() ? AUTOTUNE_METHOD_RLS : AppAutotuneGetMethod();
+  snprintf(b, n, "%s", AutotuneMethodName(m));
+}
+static void getAutotuneResult(char *b, size_t n) {
+  AutotuneResult r = RlsIsTheActiveEngine() ? AppRlsGetResult() : AppAutotuneGetResult();
+  snprintf(b, n, "%s", AutotuneResultName(r));
+}
+static void getAutotuneKpResult(char *b, size_t n) {
+  int32_t kp = RlsIsTheActiveEngine() ? AppRlsGetKpResultQ8() : AppAutotuneGetKpResultQ8();
+  snprintf(b, n, "%ld", (long)kp);
+}
+static void getAutotuneKiResult(char *b, size_t n) {
+  int32_t ki = RlsIsTheActiveEngine() ? AppRlsGetKiResultQ8() : AppAutotuneGetKiResultQ8();
+  snprintf(b, n, "%ld", (long)ki);
+}
 static void getAutotunePosPResult(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppAutotuneGetPosPResultQ8()); }
 static void getAutotunePeriod(char *b, size_t n) { snprintf(b, n, "%lu", (unsigned long)AppAutotuneGetMeasuredPeriodTicks()); }
 static void getAutotuneGain(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppAutotuneGetMeasuredGainQ8()); }
+
+static void getRlsActive(char *b, size_t n) { snprintf(b, n, "%d", AppRlsBusy()); }
+static void getRlsThetaA(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppRlsGetThetaAQ8()); }
+static void getRlsThetaB(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppRlsGetThetaBQ8()); }
+static void getRlsPTrace(char *b, size_t n) { snprintf(b, n, "%lld", (long long)AppRlsGetPTrace()); }
+static void getRlsTicks(char *b, size_t n) { snprintf(b, n, "%lu", (unsigned long)AppRlsGetTicksObserved()); }
 
 /* Wire integers use explicit fractional bits, avoiding ambiguous Q16/Q8
  * labels: value = raw / 2^fractional_bits. Torque units are normalized command
  * codes (32767 full scale), not measured Nm or fixed-point Q16. */
 #define INT_META(unit) "\"type\":\"i32\",\"fractional_bits\":0,\"unit\":\"" unit "\""
 #define UINT_META(unit) "\"type\":\"u32\",\"fractional_bits\":0,\"unit\":\"" unit "\""
+#define I64_META(unit) "\"type\":\"i64\",\"fractional_bits\":0,\"unit\":\"" unit "\""
 #define Q8_META(unit) "\"type\":\"i32\",\"fractional_bits\":8,\"unit\":\"" unit "\""
 #define BOOL_META "\"type\":\"bool\",\"unit\":\"boolean\",\"choices\":[\"0\",\"1\"]"
 #define ENUM_META(values) "\"type\":\"enum\",\"unit\":\"name\",\"choices\":[" values "]"
@@ -465,13 +497,22 @@ static const var_entry_t kVars[] = {
   { "monitor.active",     getMonitorActive,     NULL, BOOL_META },
   { "monitor.post_trigger_ticks", getMonitorFreezePostTicks, setMonitorFreezePostTicks, UINT_META("tick") },
   { "autotune.active",       getAutotuneActive,     NULL, BOOL_META },
-  { "autotune.method",       getAutotuneMethod,     NULL, ENUM_META("\"relay\"") },
+  { "autotune.method",       getAutotuneMethod,     NULL, ENUM_META("\"relay\",\"rls\"") },
   { "autotune.result",       getAutotuneResult,     NULL, ENUM_META("\"none\",\"ok\",\"no_oscillation\",\"bad_measurement\"") },
   { "autotune.velocity_kp",    getAutotuneKpResult,   NULL, Q8_META("torque_unit/(encoder_count/tick)") },
   { "autotune.velocity_ki",    getAutotuneKiResult,   NULL, Q8_META("torque_unit/(encoder_count/tick)/tick") },
   { "autotune.position_kp", getAutotunePosPResult, NULL, Q8_META("1/tick") },
   { "autotune.period_ticks", getAutotunePeriod,     NULL, UINT_META("tick") },
   { "autotune.plant_gain",  getAutotuneGain,       NULL, Q8_META("reserved") },
+  /* rls-specific diagnostics -- autotune.active/.method/.result/.velocity_kp/.velocity_ki
+     above already report rls's own numbers whenever it's the active engine (see
+     RlsIsTheActiveEngine()); these are for watching rls's internal estimate directly,
+     independent of which engine Protocol.c currently considers "the" active one. */
+  { "autotune.rls_active",   getRlsActive,          NULL, BOOL_META },
+  { "autotune.rls_theta_a",  getRlsThetaA,          NULL, Q8_META("reserved") },
+  { "autotune.rls_theta_b",  getRlsThetaB,          NULL, Q8_META("reserved") },
+  { "autotune.rls_p_trace",  getRlsPTrace,          NULL, I64_META("reserved") },
+  { "autotune.rls_ticks",    getRlsTicks,           NULL, UINT_META("tick") },
   { "diag.tick_cycles",     getDiagTickCycles,     NULL, UINT_META("cpu_cycle") },
   { "diag.tick_cycles_max", getDiagTickCyclesMax,  NULL, UINT_META("cpu_cycle") },
   { "diag.tick_load_pct",   getDiagTickLoadPct,    NULL, INT_META("percent") },
@@ -668,12 +709,20 @@ static void cmdSignal(int argc, char **argv) {
   respError("unknown test subcommand");
 }
 
+#define RLS_DEFAULT_LAMBDA_Q8  256   /* 1.0, no forgetting -- the stable default; see RLS.c's
+                                         file comment on forgetting-factor RLS "bursting" under
+                                         near-noiseless tracking before loosening this */
+#define RLS_DEFAULT_GLIDE_MS  2000U  /* ~2s -- "resolves to delightful" should be felt, not
+                                         instant; bench-TBD, not finalized */
+
 static void cmdAutotuneStart(int argc, char **argv) {
-  static const char *usage = "usage: autotune start relay <amplitude> [max_ticks]";
+  static const char *usage =
+      "usage: autotune start relay <amplitude> [max_ticks] | start rls [lambda_q8] [glide_ms]";
   if (argc < 3) { respError(usage); return; }
 
   if (!strcmp(argv[2], "relay")) {
     if (argc < 4) { respError(usage); return; }
+    if (AppRlsBusy()) { respError("rls is already running -- stop it first"); return; }
     int32_t amp;
     uint32_t maxTicks = 0U;
     if (ParseI32(argv[3], &amp) != 0) { respError("invalid amplitude"); return; }
@@ -690,16 +739,44 @@ static void cmdAutotuneStart(int argc, char **argv) {
     respKV("state", "running");
     return;
   }
+  if (!strcmp(argv[2], "rls")) {
+    if (AppAutotuneBusy()) { respError("relay is already running -- stop it first"); return; }
+    if (FaultIsLatched()) { respError("clear the latched fault before autotune start rls"); return; }
+    int32_t lambdaQ8 = RLS_DEFAULT_LAMBDA_Q8;
+    uint32_t glideMs = RLS_DEFAULT_GLIDE_MS;
+    if (argc >= 4 && ParseI32(argv[3], &lambdaQ8) != 0) { respError("invalid lambda_q8"); return; }
+    if (argc >= 5 && ParseU32(argv[4], &glideMs) != 0) { respError("invalid glide_ms"); return; }
+    /* Unlike relay, rls doesn't drive torque itself -- it only observes
+     * whatever the normal cascade is already commanding (see RLS.h), so it
+     * has no polarity precondition of its own to check here. */
+    AppRlsStart(lambdaQ8, glideMs);
+    respKV("state", "running");
+    return;
+  }
   respError(usage);
 }
 
 static void cmdAutotune(int argc, char **argv) {
   if (argc < 2) {
-    respError("usage: autotune <start relay <amp> [max_ticks] | stop | apply>");
+    respError("usage: autotune <start relay <amp> [max_ticks] | start rls [lambda_q8] [glide_ms] | stop | apply>");
     return;
   }
-  if (!strcmp(argv[1], "stop")) { AppAutotuneStop(); respKV("state", "stopped"); return; }
+  if (!strcmp(argv[1], "stop")) {
+    AppAutotuneStop();
+    AppRlsStop();
+    respKV("state", "stopped");
+    return;
+  }
   if (!strcmp(argv[1], "apply")) {
+    /* Both engines are mutually exclusive while running (see
+     * cmdAutotuneStart()'s guards), so in practice at most one ever has a
+     * live OK result at a time -- rls checked first only because it's the
+     * newer engine, not because of any real priority. */
+    if (AppRlsGetResult() == AUTOTUNE_RESULT_OK) {
+      AppRlsApply();
+      respKV("state", "applied");
+      return;
+    }
     if (AppAutotuneGetResult() != AUTOTUNE_RESULT_OK) { respError("no successful autotune result to apply"); return; }
     AppAutotuneApply();
     respKV("state", "applied");
@@ -788,7 +865,7 @@ static const cmd_t kCommands[] = {
   { "test",     cmdSignal,   "<impulse <amp> | square <torque|position> <amp> <half_period_ticks> [duration] | stop>" },
   { "monitor",  cmdMonitor,  "<start|stop|dump|schema> -- toggle the channel-1 binary telemetry stream, dump recorded history to it, or print its frame schema as JSON" },
   { "autotune", cmdAutotune,
-    "<start relay <amp> [max_ticks] | stop | apply>" },
+    "<start relay <amp> [max_ticks] | start rls [lambda_q8] [glide_ms] | stop | apply>" },
   { "config",   cmdConfig,   "<save|load|defaults> -- flash config persistence" },
   { NULL, NULL, NULL },
 };
@@ -860,6 +937,34 @@ static void PollAutotuneProgress(void) {
   sUartInst.tx((const uint8_t *)buf, (uint16_t)n);
 }
 
+/* Same unsolicited-periodic-status idea as PollAutotuneProgress() above,
+ * for rls -- it can run across many moves with pauses between (see RLS.h),
+ * so there's no fixed timeout to wait out, just a continuously-updating
+ * estimate worth a periodic line. Deliberately a DIFFERENT line shape
+ * (autotune.rls_progress, not autotune.progress) rather than reusing
+ * relay's -- relay's fields (switches, peak_vel) don't apply here, and
+ * reusing the same line text for a differently-shaped payload risks
+ * confusing any host tooling already parsing autotune.progress. */
+static uint32_t sLastPrintedRlsProgressSeq = 0U;
+static void PollRlsProgress(void) {
+  if (!AppRlsBusy()) return;
+
+  uint32_t seq = AppRlsGetProgressSeq();
+  if (seq == sLastPrintedRlsProgressSeq) return;
+  sLastPrintedRlsProgressSeq = seq;
+
+  char buf[96];
+  int n = snprintf(buf, sizeof(buf),
+                "autotune.rls_progress ticks=%lu a=%ld b=%ld kp=%ld ki=%ld p_trace=%lld\r\n",
+                (unsigned long)AppRlsGetTicksObserved(),
+                (long)AppRlsGetThetaAQ8(), (long)AppRlsGetThetaBQ8(),
+                (long)AppRlsGetKpResultQ8(), (long)AppRlsGetKiResultQ8(),
+                (long long)AppRlsGetPTrace());
+  if (n <= 0) return;
+  sUsbInst.tx((const uint8_t *)buf, (uint16_t)n);
+  sUartInst.tx((const uint8_t *)buf, (uint16_t)n);
+}
+
 void ProtocolInit(void) {
   sUsbInst.head = sUsbInst.tail = 0;
   sUsbInst.len = 0;
@@ -868,10 +973,12 @@ void ProtocolInit(void) {
   sUartInst.len = 0;
   sUartInst.pendEol = 0;
   sLastPrintedRelayProgressSeq = 0U;
+  sLastPrintedRlsProgressSeq = 0U;
 }
 
 void ProtocolPoll(void) {
   PollInstance(&sUsbInst);
   PollInstance(&sUartInst);
   PollAutotuneProgress();
+  PollRlsProgress();
 }
