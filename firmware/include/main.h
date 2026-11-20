@@ -15,6 +15,7 @@
 #include "Fault.h"
 #include "Signal.h"
 #include "Autotune.h"
+#include "RLS.h"
 
 void Error_Handler(void);
 void SystemClock_Config(void);
@@ -153,6 +154,28 @@ uint32_t AppAutotuneGetRelayProgressMaxTicks(void);
 uint32_t AppAutotuneGetRelayProgressSwitchCount(void);
 uint32_t AppAutotuneGetRelayProgressSwitchesNeeded(void);
 int32_t  AppAutotuneGetRelayProgressPeakVelocity(void);
+
+/* Online RLS velocity-loop self-tuning (RLS.c) -- the second autotune
+ * method, running as a passive observer alongside the normal cascade
+ * rather than relay's cascade-bypassing exclusive mode (see RLS.h). Not
+ * yet reachable from Protocol.c (no command surface wired up yet) and
+ * AppRlsApply() is currently a no-op stub -- both land in a later phase of
+ * this same feature; AppControlTick() already feeds it real ticks whenever
+ * the normal cascade runs, so once started it's already learning. glideMs
+ * is real milliseconds; AppRlsStart() converts it to ticks using the live
+ * control tick rate itself, not a literal tick count. */
+void    AppRlsStart(int32_t lambdaQ8, uint32_t glideMs);
+void    AppRlsStop(void);
+int     AppRlsBusy(void);
+AutotuneResult AppRlsGetResult(void);
+int32_t  AppRlsGetKpResultQ8(void);
+int32_t  AppRlsGetKiResultQ8(void);
+int32_t  AppRlsGetThetaAQ8(void);
+int32_t  AppRlsGetThetaBQ8(void);
+int64_t  AppRlsGetPTrace(void);
+uint32_t AppRlsGetTicksObserved(void);
+uint32_t AppRlsGetProgressSeq(void);
+void     AppRlsApply(void);
 
 /* Built-in test-signal generator (Signal.c). Refused (no-op) while a hard
  * fault is latched; a fault that latches mid-signal stops it. */
