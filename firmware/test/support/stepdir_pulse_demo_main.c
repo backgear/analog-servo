@@ -13,24 +13,48 @@
  *
  * Built directly with the host cc, not through PlatformIO -- Control.c has
  * no HAL dependency, the same reason pio test -e native can run it on the
- * host. See tools/stepdir_pulse_demo.py, which compiles and runs this.
+ * host. See tools/stepdir_pulse_demo.py, which compiles, runs, and plots
+ * this (that script is also the one-command way to regenerate every
+ * assets/stepdir-*.png after a Control.c change).
  *
- * Usage: stepdir_pulse_demo <rateEdgesPerSec> <jitterFraction> <ticks> <t0Seconds>
+ * Usage: stepdir_pulse_demo --rate N --ticks N [--jitter F] [--t0 S]
+ *                            [--ramp-seconds S] [--filter-shift N]
+ * --ramp-seconds >0 ramps the pulse rate linearly from 0 to --rate over
+ * that many seconds, then holds --rate for the remaining ticks (0, the
+ * default, means --rate from tick 0 -- no ramp).
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "Control.h"
 #include "PulseTrain.h"
 
+static double NextDoubleArg(int argc, char **argv, int *i) {
+  if (*i + 1 >= argc) { fprintf(stderr, "%s: missing value\n", argv[*i]); exit(1); }
+  return atof(argv[++*i]);
+}
+
 int main(int argc, char **argv) {
-  if (argc != 5) {
-    fprintf(stderr, "usage: %s <rateEdgesPerSec> <jitterFraction> <ticks> <t0Seconds>\n", argv[0]);
+  double rateEdgesPerSec = -1.0, jitterFraction = 0.0, t0Seconds = 0.0, rampSeconds = 0.0;
+  int    ticks = -1;
+  int32_t filterShift = 0;
+
+  for (int i = 1; i < argc; i++) {
+    if (!strcmp(argv[i], "--rate")) rateEdgesPerSec = NextDoubleArg(argc, argv, &i);
+    else if (!strcmp(argv[i], "--jitter")) jitterFraction = NextDoubleArg(argc, argv, &i);
+    else if (!strcmp(argv[i], "--ticks")) ticks = (int)NextDoubleArg(argc, argv, &i);
+    else if (!strcmp(argv[i], "--t0")) t0Seconds = NextDoubleArg(argc, argv, &i);
+    else if (!strcmp(argv[i], "--ramp-seconds")) rampSeconds = NextDoubleArg(argc, argv, &i);
+    else if (!strcmp(argv[i], "--filter-shift")) filterShift = (int32_t)NextDoubleArg(argc, argv, &i);
+    else { fprintf(stderr, "unknown argument: %s\n", argv[i]); return 1; }
+  }
+  if (rateEdgesPerSec < 0.0 || ticks < 0) {
+    fprintf(stderr, "usage: %s --rate N --ticks N [--jitter F] [--t0 S] "
+                    "[--ramp-seconds S] [--filter-shift N]\n", argv[0]);
     return 1;
   }
-  double rateEdgesPerSec = atof(argv[1]);
-  double jitterFraction  = atof(argv[2]);
-  int    ticks           = atoi(argv[3]);
-  double t0Seconds        = atof(argv[4]);
+  int rampTicks = (int)(rampSeconds * 1000.0);
+  double accelRatePerSec2 = rampSeconds > 0.0 ? rateEdgesPerSec / rampSeconds : 0.0;
 
   /* Same tune test_stepdir_control.c uses -- a representative, already-
    * reasonable tune, not a claim of correctness for any real plant. */
@@ -38,9 +62,10 @@ int main(int argc, char **argv) {
     .posGainQ8 = 256,
     .velGainKpQ8 = 512,
     .velGainKiQ8 = 26,
-    .velocityClamp = 100000,
+    .velocityClamp = 200000,
     .torqueClampMin = -1000,
     .torqueClampMax = 1000,
+    .velocityFilterShift = filterShift,
   };
   ControlInit(&gains);
 
@@ -51,7 +76,8 @@ int main(int argc, char **argv) {
 
   printf("[\n");
   for (int i = 0; i < ticks; i++) {
-    int32_t delta = PulseTrainTickDelta(&pt, rateEdgesPerSec, 1000.0, jitterFraction);
+    double rate = (i < rampTicks) ? (accelRatePerSec2 * i / 1000.0) : rateEdgesPerSec;
+    int32_t delta = PulseTrainTickDelta(&pt, rate, 1000.0, jitterFraction);
     posTargetAccum += delta;
     int32_t torque = ControlTick(posTargetAccum, pos, vel, 32000);
 

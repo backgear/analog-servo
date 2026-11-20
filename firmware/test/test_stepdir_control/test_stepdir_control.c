@@ -254,6 +254,123 @@ static void test_jittered_pulse_train_does_not_degrade_over_a_longer_run(void) {
   TEST_ASSERT_TRUE(secondHalfMaxErr <= firstHalfMaxErr + 10);   /* +10: noise margin, not growth */
 }
 
+/* ---- ramped pulse train -- does an ACCELERATING step/dir source (an
+ * indexer ramping its own step rate up) get tracked without excess lag?
+ * Mode A has no feedforward of its own to help with this: main.c's real
+ * Mode A branch (main.c:466-472) always leaves Control.c's
+ * referenceVelocityQ8 at 0 -- only Mode B/C ever set it -- so this is
+ * exercising PURE reactive P->PI tracking of a ramping target, same as
+ * production Mode A actually runs.
+ *
+ * Caveat that matters more here than anywhere else in this suite: the toy
+ * plant (velocity integrates torque/16, same convention as
+ * test_control.c's RunPlant()) has no real inertia or bandwidth limit, so
+ * it may well be stiffer than a real motor and understate how much lag a
+ * missing feedforward term would cause on the bench. Treat "stays
+ * bounded here" as a regression guard for Control.c's own math, not as
+ * evidence that real hardware would track an accelerating pulse train
+ * equally well. ------------------------------------------------------ */
+
+typedef struct {
+  int32_t maxErrAccel;    /* worst following error while the rate is still ramping */
+  int32_t maxErrCruise;   /* worst following error once the rate target is reached */
+} RampedPulseTrainResult;
+
+static RampedPulseTrainResult RunRampedPulseTrainTrial(double targetRateEdgesPerSec,
+                                                        double rampSeconds, double jitterFraction,
+                                                        int accelTicks, int cruiseTicks) {
+  PulseTrainState pt;
+  PulseTrainInit(&pt, kSeed);
+  double accelRatePerSec2 = targetRateEdgesPerSec / rampSeconds;
+  int32_t posTargetAccum = 0, pos = 0, vel = 0;
+  RampedPulseTrainResult result = {0, 0};
+
+  int ticks = accelTicks + cruiseTicks;
+  for (int i = 0; i < ticks; i++) {
+    double rate = (i < accelTicks) ? (accelRatePerSec2 * i / kTickHz) : targetRateEdgesPerSec;
+    int32_t delta = PulseTrainTickDelta(&pt, rate, kTickHz, jitterFraction);
+    posTargetAccum += delta;
+    int32_t torque = ControlTick(posTargetAccum, pos, vel, kDt);
+    int32_t err = Abs32(posTargetAccum - pos);
+    if (i < accelTicks) {
+      if (err > result.maxErrAccel) result.maxErrAccel = err;
+    } else {
+      if (err > result.maxErrCruise) result.maxErrCruise = err;
+    }
+    vel += torque / 16;
+    pos += vel;
+  }
+  return result;
+}
+
+/* Moderate ramp: 0 -> 2500 edges/sec over 1s, then 1s cruise. Calibrated
+ * (seed 12345): maxErrAccel/maxErrCruise observed 10/10 clean, 11/12
+ * jittered -- bounds below give ~2.5x margin. */
+static void test_ramped_pulse_train_moderate_accel_clean_tracks_without_excess_lag(void) {
+  RampedPulseTrainResult r = RunRampedPulseTrainTrial(2500.0, 1.0, 0.0, 1000, 1000);
+  TEST_ASSERT_TRUE(r.maxErrAccel <= 25);
+  TEST_ASSERT_TRUE(r.maxErrCruise <= 25);
+}
+
+static void test_ramped_pulse_train_moderate_accel_jittered_remains_bounded(void) {
+  RampedPulseTrainResult r = RunRampedPulseTrainTrial(2500.0, 1.0, 0.3, 1000, 1000);
+  TEST_ASSERT_TRUE(r.maxErrAccel <= 30);
+  TEST_ASSERT_TRUE(r.maxErrCruise <= 30);
+}
+
+/* Fast ramp: 0 -> 20000 edges/sec in 0.1s (an aggressive indexer
+ * accel), then 1.9s cruise. Calibrated: maxErrAccel/maxErrCruise observed
+ * 20/20 clean, 35/53 jittered. Error during the ramp itself is NOT larger
+ * than at cruise in either case here -- see the toy-plant caveat above
+ * before reading that as "feedforward wouldn't help on real hardware." */
+static void test_ramped_pulse_train_fast_accel_clean_tracks_without_excess_lag(void) {
+  RampedPulseTrainResult r = RunRampedPulseTrainTrial(20000.0, 0.1, 0.0, 100, 1900);
+  TEST_ASSERT_TRUE(r.maxErrAccel <= 45);
+  TEST_ASSERT_TRUE(r.maxErrCruise <= 45);
+}
+
+static void test_ramped_pulse_train_fast_accel_jittered_remains_bounded(void) {
+  RampedPulseTrainResult r = RunRampedPulseTrainTrial(20000.0, 0.1, 0.3, 100, 1900);
+  TEST_ASSERT_TRUE(r.maxErrAccel <= 70);
+  TEST_ASSERT_TRUE(r.maxErrCruise <= 90);
+}
+
+/* ---- velocityFilterShift -- does smoothing the measured velocity cut
+ * down the reverse-torque chatter from pulse-train quantization? Measured
+ * (seed 12345, 2500 edges/sec, last-quarter-of-run window): shift=0
+ * jittered maxErr=11/maxJump=8; shift=1 jittered maxErr=12/maxJump=8;
+ * shift=1 clean maxErr=10/maxJump=3 (a real improvement over shift=0
+ * clean's maxJump=4, but NOT a clear win under jitter -- marginal either
+ * way, not the fix for this symptom).
+ *
+ * shift>=2 is a genuine trap with THIS gain set (velGainKpQ8=512, no
+ * feedforward reaching Mode A): measured shift=3 jittered maxErr=577,
+ * maxJump=477 -- the added filter lag destabilizes the loop outright,
+ * roughly 50x worse than shift=0/1. Not asserted here (a test that must
+ * stay broken is the wrong kind of test) -- noted so nobody reaches for a
+ * bigger shift expecting a bigger improvement with these gains. */
+static PulseTrainTrialResult RunPulseTrainTrialWithFilterShift(double rateEdgesPerSec,
+                                                                double jitterFraction, int ticks,
+                                                                int32_t filterShift) {
+  ControlGains g = {
+    .posGainQ8 = 256,
+    .velGainKpQ8 = 512,
+    .velGainKiQ8 = 26,
+    .velocityClamp = 100000,
+    .torqueClampMin = -1000,
+    .torqueClampMax = 1000,
+    .velocityFilterShift = filterShift,
+  };
+  ControlInit(&g);
+  return RunPulseTrainTrial(rateEdgesPerSec, jitterFraction, ticks);
+}
+
+static void test_filter_shift_one_stays_bounded_under_jitter(void) {
+  PulseTrainTrialResult r = RunPulseTrainTrialWithFilterShift(2500.0, 0.3, 2000, 1);
+  TEST_ASSERT_TRUE(r.maxErrSteadyState <= 30);
+  TEST_ASSERT_TRUE(r.maxJumpSteadyState <= 25);
+}
+
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(test_clean_pulse_train_slow_rate_tracks_without_jumps);
@@ -261,6 +378,11 @@ int main(void) {
   RUN_TEST(test_jittered_pulse_train_slow_rate_remains_bounded);
   RUN_TEST(test_jittered_pulse_train_fast_rate_remains_bounded);
   RUN_TEST(test_jittered_pulse_train_does_not_degrade_over_a_longer_run);
+  RUN_TEST(test_ramped_pulse_train_moderate_accel_clean_tracks_without_excess_lag);
+  RUN_TEST(test_ramped_pulse_train_moderate_accel_jittered_remains_bounded);
+  RUN_TEST(test_ramped_pulse_train_fast_accel_clean_tracks_without_excess_lag);
+  RUN_TEST(test_ramped_pulse_train_fast_accel_jittered_remains_bounded);
+  RUN_TEST(test_filter_shift_one_stays_bounded_under_jitter);
   return UNITY_END();
 }
 

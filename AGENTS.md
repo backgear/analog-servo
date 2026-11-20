@@ -43,9 +43,11 @@ hardware paths and control experiments live on separate branches — see
   + `sigrok-decoder-monitor/` (binary telemetry capture/decode/export),
   `stepdir_pulse_demo.py` (a SIMULATED, not bench-captured, Mode A
   step/dir tracking demo -- builds and runs
-  `firmware/test/support/stepdir_pulse_demo_main.c` against a synthetic
-  pulse train, clean and jittered, then reuses `plot_telemetry.py`
-  unchanged on the result).
+  `firmware/test/support/stepdir_pulse_demo_main.c` against synthetic
+  pulse trains, clean/jittered/ramped/filter-shift-varied, then reuses
+  `plot_telemetry.py` unchanged on the result; run with no arguments to
+  regenerate all three `assets/stepdir-*.png` in place after a
+  `Control.c` change).
 
 ## Branch convention
 

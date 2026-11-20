@@ -15,6 +15,14 @@ be well-supported by existing manufacturers.
 
 ![Simulated (not a bench capture): Mode A (step/dir) tracking a synthetic pulse train, clean vs. with short-term timing jitter injected](assets/stepdir-pulse-demo.png)
 
+![Simulated: Mode A tracking an ACCELERATING synthetic pulse train, clean vs. jittered](assets/stepdir-ramp-demo.png)
+
+![Simulated: velocityFilterShift vs. torque chatter -- a mild improvement at shift=1, a destabilizing trap at shift=3 with this gain set](assets/stepdir-filter-shift-demo.png)
+
+These three are all generated, not captured -- see `tools/stepdir_pulse_demo.py`
+(regenerate all three in place after a `Control.c` change with
+`python3 tools/stepdir_pulse_demo.py`, no arguments needed).
+
 **Q: Is this going to produce better results than a Teknic Clearpath?**
 A: No, almost certainly not.
 
