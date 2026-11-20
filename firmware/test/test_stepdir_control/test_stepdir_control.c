@@ -335,6 +335,115 @@ static void test_ramped_pulse_train_fast_accel_jittered_remains_bounded(void) {
   TEST_ASSERT_TRUE(r.maxErrCruise <= 90);
 }
 
+/* ---- PROTOTYPE: velocity feedforward for Mode A -- NOT current production
+ * behavior. The ramped-pulse-train tests above exercise what main.c
+ * ACTUALLY does today (zero feedforward, pure reactive P->PI). This
+ * section explores whether feeding Control.c's existing
+ * ControlTickWithReferenceQ8() feedforward path -- already used by Mode
+ * B/C, just never reached from Mode A -- would help Mode A track an
+ * accelerating pulse train.
+ *
+ * Feeding this tick's raw step delta straight in as the Q8 reference
+ * velocity cuts acceleration lag a lot, but injects the pulse train's own
+ * quantization/jitter directly into the torque command every tick,
+ * roughly doubling steady-state chatter (measured, moderate jittered
+ * ramp: avgJumpCruise 1.86 -> 3.12). One-pole smoothing the delta first
+ * -- same alpha=1/2^shift convention Control.c's own velocityFilterShift
+ * already uses, just applied to the COMMANDED side instead of the
+ * feedback side -- recovers most or all of that chatter cost while
+ * keeping most of the lag improvement. Swept shift=1..4 against all four
+ * ramped scenarios above; shift=3 is the best overall balance and is
+ * what these tests pin down.
+ *
+ * These tests guard THIS PROTOTYPE'S measured behavior as a baseline for
+ * a possible future main.c change -- they are not a regression guard on
+ * anything currently shipped, and main.c does not call
+ * ControlTickWithReferenceQ8() from Mode A today. ------------------- */
+
+typedef struct {
+  int32_t maxErrAccel;
+  int32_t maxErrCruise;
+  int32_t maxJumpCruise;
+} FeedforwardTrialResult;
+
+/* smoothShift < 0 means "raw, unsmoothed feedforward" (the naive first
+ * attempt); smoothShift >= 0 one-pole-smooths the delta at that shift
+ * before using it as the Q8 reference velocity. */
+static FeedforwardTrialResult RunRampedPulseTrainTrialWithFeedforward(
+    double targetRateEdgesPerSec, double rampSeconds, double jitterFraction,
+    int accelTicks, int cruiseTicks, int32_t smoothShift) {
+  PulseTrainState pt;
+  PulseTrainInit(&pt, kSeed);
+  double accelRatePerSec2 = targetRateEdgesPerSec / rampSeconds;
+  int32_t posTargetAccum = 0, pos = 0, vel = 0, prevTorque = 0;
+  int64_t filteredDeltaQ8 = 0;
+  FeedforwardTrialResult result = {0, 0, 0};
+
+  int ticks = accelTicks + cruiseTicks;
+  for (int i = 0; i < ticks; i++) {
+    double rate = (i < accelTicks) ? (accelRatePerSec2 * i / kTickHz) : targetRateEdgesPerSec;
+    int32_t delta = PulseTrainTickDelta(&pt, rate, kTickHz, jitterFraction);
+    posTargetAccum += delta;
+
+    int64_t referenceVelocityQ8 = (int64_t)delta * 256;
+    if (smoothShift >= 0) {
+      filteredDeltaQ8 += (referenceVelocityQ8 - filteredDeltaQ8) >> smoothShift;
+      referenceVelocityQ8 = filteredDeltaQ8;
+    }
+    int32_t torque = ControlTickWithReferenceQ8(posTargetAccum, pos, vel, referenceVelocityQ8, kDt);
+
+    int32_t err = Abs32(posTargetAccum - pos);
+    int32_t jump = Abs32(torque - prevTorque);
+    prevTorque = torque;
+    if (i < accelTicks) {
+      if (err > result.maxErrAccel) result.maxErrAccel = err;
+    } else {
+      if (err > result.maxErrCruise) result.maxErrCruise = err;
+      if (jump > result.maxJumpCruise) result.maxJumpCruise = jump;
+    }
+    vel += torque / 16;
+    pos += vel;
+  }
+  return result;
+}
+
+/* The actual claim: smoothed feedforward (shift=3) beats production's
+ * reactive-only tracking on lag, on both ramp scenarios above, without a
+ * chatter blowup -- a real comparison against the already-measured
+ * baseline, not just an absolute number. */
+static void test_prototype_smoothed_feedforward_beats_reactive_only_on_moderate_ramp(void) {
+  RampedPulseTrainResult reactive = RunRampedPulseTrainTrial(2500.0, 1.0, 0.3, 1000, 1000);
+  FeedforwardTrialResult smoothed =
+      RunRampedPulseTrainTrialWithFeedforward(2500.0, 1.0, 0.3, 1000, 1000, 3);
+  TEST_ASSERT_TRUE(smoothed.maxErrAccel < reactive.maxErrAccel);    /* less lag ramping up */
+  TEST_ASSERT_TRUE(smoothed.maxErrCruise <= reactive.maxErrCruise); /* at least as good settled */
+  TEST_ASSERT_TRUE(smoothed.maxJumpCruise <= 20);                   /* no chatter blowup */
+}
+
+static void test_prototype_smoothed_feedforward_beats_reactive_only_on_fast_ramp(void) {
+  RampedPulseTrainResult reactive = RunRampedPulseTrainTrial(20000.0, 0.1, 0.3, 100, 1900);
+  FeedforwardTrialResult smoothed =
+      RunRampedPulseTrainTrialWithFeedforward(20000.0, 0.1, 0.3, 100, 1900, 3);
+  TEST_ASSERT_TRUE(smoothed.maxErrAccel < reactive.maxErrAccel);
+  TEST_ASSERT_TRUE(smoothed.maxErrCruise < reactive.maxErrCruise);
+  TEST_ASSERT_TRUE(smoothed.maxJumpCruise <= 55);   /* better than raw-ff's measured 57, see
+                                                         the comment above -- this hardest
+                                                         scenario doesn't fully recover to
+                                                         reactive-only's chatter floor, unlike
+                                                         the moderate-ramp case above */
+}
+
+/* Confirms smoothing is doing real work, not just a no-op: smoothed
+ * (shift=3) must chatter meaningfully less than raw (unsmoothed)
+ * feedforward on the same scenario. */
+static void test_prototype_smoothing_reduces_chatter_versus_raw_feedforward(void) {
+  FeedforwardTrialResult raw =
+      RunRampedPulseTrainTrialWithFeedforward(2500.0, 1.0, 0.3, 1000, 1000, -1);
+  FeedforwardTrialResult smoothed =
+      RunRampedPulseTrainTrialWithFeedforward(2500.0, 1.0, 0.3, 1000, 1000, 3);
+  TEST_ASSERT_TRUE(smoothed.maxJumpCruise < raw.maxJumpCruise);
+}
+
 /* ---- velocityFilterShift -- does smoothing the measured velocity cut
  * down the reverse-torque chatter from pulse-train quantization? Measured
  * (seed 12345, 2500 edges/sec, last-quarter-of-run window): shift=0
@@ -382,6 +491,9 @@ int main(void) {
   RUN_TEST(test_ramped_pulse_train_moderate_accel_jittered_remains_bounded);
   RUN_TEST(test_ramped_pulse_train_fast_accel_clean_tracks_without_excess_lag);
   RUN_TEST(test_ramped_pulse_train_fast_accel_jittered_remains_bounded);
+  RUN_TEST(test_prototype_smoothed_feedforward_beats_reactive_only_on_moderate_ramp);
+  RUN_TEST(test_prototype_smoothed_feedforward_beats_reactive_only_on_fast_ramp);
+  RUN_TEST(test_prototype_smoothing_reduces_chatter_versus_raw_feedforward);
   RUN_TEST(test_filter_shift_one_stays_bounded_under_jitter);
   return UNITY_END();
 }

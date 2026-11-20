@@ -21,10 +21,10 @@ after a Control.c change -- run it with no arguments:
 
     python3 tools/stepdir_pulse_demo.py
 
-writes assets/stepdir-pulse-demo.png, assets/stepdir-ramp-demo.png, and
-assets/stepdir-filter-shift-demo.png in place. Pass --out-dir to write
-elsewhere instead (e.g. for a one-off comparison without touching the
-checked-in images).
+writes assets/stepdir-pulse-demo.png, assets/stepdir-ramp-demo.png,
+assets/stepdir-filter-shift-demo.png, and assets/stepdir-feedforward-demo.png
+in place. Pass --out-dir to write elsewhere instead (e.g. for a one-off
+comparison without touching the checked-in images).
 """
 import argparse
 import json
@@ -53,11 +53,16 @@ def build_driver(build_dir):
     return binary
 
 
-def run_segment(binary, rate, ticks, t0, jitter=0.0, ramp_seconds=0.0, filter_shift=0):
+def run_segment(binary, rate, ticks, t0, jitter=0.0, ramp_seconds=0.0, filter_shift=0,
+                 feedforward=None, ff_shift=None):
     cmd = [str(binary), "--rate", str(rate), "--ticks", str(ticks),
            "--jitter", str(jitter), "--t0", str(t0)]
     if ramp_seconds:
         cmd += ["--ramp-seconds", str(ramp_seconds)]
+    if feedforward:
+        cmd += ["--feedforward", feedforward]
+    if ff_shift is not None:
+        cmd += ["--ff-shift", str(ff_shift)]
     if filter_shift:
         cmd += ["--filter-shift", str(filter_shift)]
     out = subprocess.run(cmd, check=True, capture_output=True, text=True)
@@ -128,6 +133,30 @@ def build_filter_shift_demo(binary, out, build_dir):
            build_dir)
 
 
+def build_feedforward_demo(binary, out, build_dir):
+    """PROTOTYPE, not current production Mode A behavior (see
+    test_stepdir_control.c's PROTOTYPE section): does feeding Control.c's
+    existing feedforward path help an accelerating pulse train track
+    faster, and does smoothing the fed-forward value first recover the
+    chatter cost a naive raw feedforward adds? Hardest scenario (fast
+    ramp, jittered) so the tradeoff is visible, not just the win."""
+    rate, ramp_seconds, duration, gap = 20000, 0.1, 1.0, 0.5
+    ticks = int(duration * 1000)
+    segments = []
+    windows = []
+    t = 0.0
+    for label, ff, ff_shift in (("no feedforward (current production)", None, None),
+                               ("raw feedforward (naive)", "raw", None),
+                               ("smoothed feedforward, shift=3 (prototype)", "smoothed", 3)):
+        segments += run_segment(binary, rate, ticks, t, jitter=0.3, ramp_seconds=ramp_seconds,
+                                 feedforward=ff, ff_shift=ff_shift)
+        windows.append((label, t, t + duration))
+        t += duration + gap
+    render(segments, windows, out,
+           "analog-servo Mode A (step/dir): velocity feedforward prototype -- SIMULATED",
+           build_dir)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -143,6 +172,7 @@ def main():
         build_constant_rate_demo(binary, out_dir / "stepdir-pulse-demo.png", build_dir)
         build_ramp_demo(binary, out_dir / "stepdir-ramp-demo.png", build_dir)
         build_filter_shift_demo(binary, out_dir / "stepdir-filter-shift-demo.png", build_dir)
+        build_feedforward_demo(binary, out_dir / "stepdir-feedforward-demo.png", build_dir)
 
 
 if __name__ == "__main__":

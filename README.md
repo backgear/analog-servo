@@ -19,9 +19,17 @@ be well-supported by existing manufacturers.
 
 ![Simulated: velocityFilterShift vs. torque chatter -- a mild improvement at shift=1, a destabilizing trap at shift=3 with this gain set](assets/stepdir-filter-shift-demo.png)
 
-These three are all generated, not captured -- see `tools/stepdir_pulse_demo.py`
-(regenerate all three in place after a `Control.c` change with
-`python3 tools/stepdir_pulse_demo.py`, no arguments needed).
+![Simulated, PROTOTYPE -- not current production behavior: no feedforward (today's Mode A) vs. raw vs. smoothed velocity feedforward, hardest (fast jittered ramp) scenario](assets/stepdir-feedforward-demo.png)
+
+These four are all generated, not captured -- see `tools/stepdir_pulse_demo.py`
+(regenerate all four in place after a `Control.c` change with
+`python3 tools/stepdir_pulse_demo.py`, no arguments needed). The last one is
+a prototype, not what Mode A actually does today: it explores feeding
+`Control.c`'s existing feedforward path (already used by Mode B/C) from Mode
+A too. Shown at the hardest scenario tested, where the win is real but
+partial; on a more moderate ramp the smoothed version beats today's
+reactive-only tracking on both lag and chatter at once -- see
+`firmware/test/test_stepdir_control.c`'s PROTOTYPE section for the numbers.
 
 **Q: Is this going to produce better results than a Teknic Clearpath?**
 A: No, almost certainly not.

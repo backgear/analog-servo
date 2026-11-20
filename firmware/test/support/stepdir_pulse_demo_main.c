@@ -19,9 +19,18 @@
  *
  * Usage: stepdir_pulse_demo --rate N --ticks N [--jitter F] [--t0 S]
  *                            [--ramp-seconds S] [--filter-shift N]
+ *                            [--feedforward none|raw|smoothed] [--ff-shift N]
  * --ramp-seconds >0 ramps the pulse rate linearly from 0 to --rate over
  * that many seconds, then holds --rate for the remaining ticks (0, the
  * default, means --rate from tick 0 -- no ramp).
+ *
+ * --feedforward selects what's fed into Control.c's existing
+ * ControlTickWithReferenceQ8() feedforward path (already used by Mode
+ * B/C, never reached from Mode A today -- see test_stepdir_control.c's
+ * PROTOTYPE section): "none" (default, current production Mode A: zero
+ * feedforward), "raw" (this tick's pulse-train delta straight in,
+ * unsmoothed), or "smoothed" (one-pole-smoothed at --ff-shift, default 3
+ * -- the calibrated sweet spot in test_stepdir_control.c).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,10 +43,14 @@ static double NextDoubleArg(int argc, char **argv, int *i) {
   return atof(argv[++*i]);
 }
 
+typedef enum { FF_NONE, FF_RAW, FF_SMOOTHED } FeedforwardMode;
+
 int main(int argc, char **argv) {
   double rateEdgesPerSec = -1.0, jitterFraction = 0.0, t0Seconds = 0.0, rampSeconds = 0.0;
   int    ticks = -1;
   int32_t filterShift = 0;
+  FeedforwardMode ffMode = FF_NONE;
+  int32_t ffShift = 3;
 
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "--rate")) rateEdgesPerSec = NextDoubleArg(argc, argv, &i);
@@ -46,11 +59,20 @@ int main(int argc, char **argv) {
     else if (!strcmp(argv[i], "--t0")) t0Seconds = NextDoubleArg(argc, argv, &i);
     else if (!strcmp(argv[i], "--ramp-seconds")) rampSeconds = NextDoubleArg(argc, argv, &i);
     else if (!strcmp(argv[i], "--filter-shift")) filterShift = (int32_t)NextDoubleArg(argc, argv, &i);
+    else if (!strcmp(argv[i], "--ff-shift")) ffShift = (int32_t)NextDoubleArg(argc, argv, &i);
+    else if (!strcmp(argv[i], "--feedforward")) {
+      if (++i >= argc) { fprintf(stderr, "--feedforward: missing value\n"); return 1; }
+      if (!strcmp(argv[i], "none")) ffMode = FF_NONE;
+      else if (!strcmp(argv[i], "raw")) ffMode = FF_RAW;
+      else if (!strcmp(argv[i], "smoothed")) ffMode = FF_SMOOTHED;
+      else { fprintf(stderr, "--feedforward: must be none|raw|smoothed\n"); return 1; }
+    }
     else { fprintf(stderr, "unknown argument: %s\n", argv[i]); return 1; }
   }
   if (rateEdgesPerSec < 0.0 || ticks < 0) {
     fprintf(stderr, "usage: %s --rate N --ticks N [--jitter F] [--t0 S] "
-                    "[--ramp-seconds S] [--filter-shift N]\n", argv[0]);
+                    "[--ramp-seconds S] [--filter-shift N] "
+                    "[--feedforward none|raw|smoothed] [--ff-shift N]\n", argv[0]);
     return 1;
   }
   int rampTicks = (int)(rampSeconds * 1000.0);
@@ -73,13 +95,25 @@ int main(int argc, char **argv) {
   PulseTrainInit(&pt, 12345u);   /* same fixed seed as the native test -- deterministic demo */
 
   int32_t posTargetAccum = 0, pos = 0, vel = 0;
+  int64_t filteredDeltaQ8 = 0;
 
   printf("[\n");
   for (int i = 0; i < ticks; i++) {
     double rate = (i < rampTicks) ? (accelRatePerSec2 * i / 1000.0) : rateEdgesPerSec;
     int32_t delta = PulseTrainTickDelta(&pt, rate, 1000.0, jitterFraction);
     posTargetAccum += delta;
-    int32_t torque = ControlTick(posTargetAccum, pos, vel, 32000);
+
+    int32_t torque;
+    if (ffMode == FF_NONE) {
+      torque = ControlTick(posTargetAccum, pos, vel, 32000);
+    } else {
+      int64_t referenceVelocityQ8 = (int64_t)delta * 256;
+      if (ffMode == FF_SMOOTHED) {
+        filteredDeltaQ8 += (referenceVelocityQ8 - filteredDeltaQ8) >> ffShift;
+        referenceVelocityQ8 = filteredDeltaQ8;
+      }
+      torque = ControlTickWithReferenceQ8(posTargetAccum, pos, vel, referenceVelocityQ8, 32000);
+    }
 
     printf("%s{\"t\": %.6f, \"position\": %d, \"cmd_position\": %d, "
            "\"velocity\": %d, \"cmd_velocity\": %d, \"torque\": %d, "

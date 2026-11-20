@@ -44,10 +44,11 @@ hardware paths and control experiments live on separate branches — see
   `stepdir_pulse_demo.py` (a SIMULATED, not bench-captured, Mode A
   step/dir tracking demo -- builds and runs
   `firmware/test/support/stepdir_pulse_demo_main.c` against synthetic
-  pulse trains, clean/jittered/ramped/filter-shift-varied, then reuses
-  `plot_telemetry.py` unchanged on the result; run with no arguments to
-  regenerate all three `assets/stepdir-*.png` in place after a
-  `Control.c` change).
+  pulse trains, clean/jittered/ramped/filter-shift-varied, plus a
+  feedforward PROTOTYPE (not current production Mode A behavior -- see
+  `test_stepdir_control.c`), then reuses `plot_telemetry.py` unchanged on
+  the result; run with no arguments to regenerate all four
+  `assets/stepdir-*.png` in place after a `Control.c` change).
 
 ## Branch convention
 
