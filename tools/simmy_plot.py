@@ -18,9 +18,34 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # Simulation-specific presets for tools/simmy/two_mass.json, NOT hardware gains.
 TUNES = {
-    'baseline': (32, 1024, 1),
-    'optimized': (256, 3072, 32),
+    'baseline': (32, 1024, 1, 0),
+    'optimized': (256, 3072, 32, 0),
+    'balanced': (256, 1024, 16, 1),
 }
+
+
+def build_driver(build_dir, simmy):
+    """Compile once for a batch; never reuse external prebuilt archives."""
+    sources = [ROOT / 'firmware/test/support/simmy_plot_main.c',
+               ROOT / 'firmware/src/Control.c']
+    sources += [simmy / 'src' / name for name in ('simmy.c', 'simmy_config.c', 'simmy_json.c')]
+    for path in [simmy / 'include/simmy.h', *sources]:
+        if not path.is_file():
+            raise FileNotFoundError(f'missing {path}; set --simmy-dir or SIMMY_DIR')
+    binary = Path(build_dir) / 'simmy_plot'
+    cmd = shlex.split(os.environ.get('CC', 'cc')) + [
+        '-std=gnu11', '-O2', '-Wall', '-Wextra', '-Werror',
+        '-I', str(ROOT / 'firmware/include'), '-I', str(simmy / 'include'),
+        *map(str, sources), '-lm', '-o', str(binary)]
+    subprocess.run(cmd, check=True)
+    return binary
+
+
+def run_driver(binary, config, gains, ticks=2000, rate=2500, ramp_seconds=1, jitter=0.3):
+    cmd = [str(binary), str(config), str(ticks), str(rate), str(ramp_seconds), str(jitter),
+           *map(str, gains)]
+    result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    return json.loads(result.stdout)
 
 
 def main():
@@ -38,10 +63,10 @@ def main():
     ap.add_argument('--pos-kp', type=int, help='override preset: raw Q8.8 integer')
     ap.add_argument('--vel-kp', type=int, help='override preset: raw Q8.8 integer')
     ap.add_argument('--vel-ki', type=int, help='override preset: raw Q8.8 integer, per tick')
-    ap.add_argument('--filter-shift', type=int, choices=range(5), default=0)
+    ap.add_argument('--filter-shift', type=int, choices=range(5), help='override preset velocity filter')
     ap.add_argument('--no-plot', action='store_true', help='only build/run/save JSON; no matplotlib needed')
     args = ap.parse_args()
-    for name, value in zip(('pos_kp', 'vel_kp', 'vel_ki'), TUNES[args.tune]):
+    for name, value in zip(('pos_kp', 'vel_kp', 'vel_ki', 'filter_shift'), TUNES[args.tune]):
         if getattr(args, name) is None:
             setattr(args, name, value)
     if not 2 <= args.ticks <= 1_000_000:
@@ -57,28 +82,18 @@ def main():
 
     simmy = args.simmy_dir.expanduser().resolve()
     config = (args.config or ROOT / 'tools' / 'simmy' / 'two_mass.json').expanduser().resolve()
-    sources = [ROOT / 'firmware/test/support/simmy_plot_main.c',
-               ROOT / 'firmware/src/Control.c']
-    sources += [simmy / 'src' / name for name in ('simmy.c', 'simmy_config.c', 'simmy_json.c')]
-    for path in [simmy / 'include/simmy.h', config, *sources]:
-        if not path.is_file():
-            ap.error(f'missing {path}; set --simmy-dir or SIMMY_DIR to a simmy checkout')
+    if not config.is_file():
+        ap.error(f'missing plant config: {config}')
     out = args.out_dir.expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
-    # Rebuild from current sources every time; never reuse simmy's potentially
-    # stale or cross-compiled build/libsimmy.a.
     with tempfile.TemporaryDirectory(prefix='servo-simmy-') as tmp:
-        binary = Path(tmp) / 'simmy_plot'
-        cmd = shlex.split(os.environ.get('CC', 'cc')) + [
-            '-std=gnu11', '-O2', '-Wall', '-Wextra', '-Werror',
-            '-I', str(ROOT / 'firmware/include'), '-I', str(simmy / 'include'),
-            *map(str, sources), '-lm', '-o', str(binary)]
-        subprocess.run(cmd, check=True)
-        run = [str(binary), str(config), str(args.ticks), str(args.rate),
-               str(args.ramp_seconds), str(args.jitter), str(args.pos_kp),
-               str(args.vel_kp), str(args.vel_ki), str(args.filter_shift)]
-        result = subprocess.run(run, check=True, capture_output=True, text=True)
-    frames = json.loads(result.stdout)
+        try:
+            binary = build_driver(tmp, simmy)
+        except FileNotFoundError as exc:
+            ap.error(str(exc))
+        frames = run_driver(binary, config,
+                            (args.pos_kp, args.vel_kp, args.vel_ki, args.filter_shift),
+                            args.ticks, args.rate, args.ramp_seconds, args.jitter)
     frames_path = out / 'frames.json'
     frames_path.write_text(json.dumps(frames) + '\n')
     # Preserve inputs separately: the frame list stays compatible with the

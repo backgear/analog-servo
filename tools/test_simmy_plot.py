@@ -64,6 +64,19 @@ class SimmyPlotTests(unittest.TestCase):
                     self.assertLessEqual(max(abs(f['cmd_position'] - f['load_position']) for f in frames), 80)
                     self.assertTrue(all(abs(f['torque']) < 999 for f in frames))
 
+    def test_balanced_tune_reduces_torque_activity(self):
+        from simmy_metrics import measure
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            tracking = measure(self.run_simulation(out))
+            balanced = measure(self.run_simulation(out, '--tune', 'balanced'))
+            self.assertLess(balanced['torque_delta_rms'], tracking['torque_delta_rms'] / 2)
+            self.assertLess(balanced['torque_rms'], tracking['torque_rms'])
+            self.assertLess(balanced['motor_rms'], 15)
+            self.assertLess(balanced['load_rms'], 25)
+            self.assertEqual(balanced['saturation_ticks'], 0)
+            self.assertEqual(json.loads((out / 'run.json').read_text())['filter_shift'], 1)
+
     def test_negative_rate(self):
         with tempfile.TemporaryDirectory() as tmp:
             frames = self.run_simulation(Path(tmp), '--rate', '-2500')

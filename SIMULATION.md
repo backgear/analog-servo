@@ -138,6 +138,27 @@ with no clamp hits. These checks do not cover stopping, rapid reversal,
 parameter uncertainty, noise robustness or real hardware stability. Integration
 tests retain the baseline case and guard motor/load error for the tuned cases.
 
+## Balanced, lower-chatter preset
+
+Use `--tune balanced` for raw Q8.8 **256 / 1024 / 16**, measured-velocity filter
+shift **1** (alpha 1/2). It leaves the plant and input disturbances unchanged.
+This sacrifices some motor tracking precision to reduce torque activity:
+
+| Full two-second scenario | Tracking (`optimized`) | `balanced` |
+| --- | ---: | ---: |
+| Motor error RMS (counts) | 6.0 | 9.6 |
+| Load error RMS (counts) | 18.4 | 19.9 |
+| Torque RMS | 91.2 | 63.9 |
+| Torque-increment RMS | 34.0 | 11.7 |
+
+Reproduce the 144-candidate local search with `python3 tools/simmy_tune.py`.
+It varies position P {192,256,320}, velocity P {512,768,1024,1280}, velocity I
+{8,16,24,32}, filter shift {0,1,2}, scoring motor RMS + load RMS + 0.8 × torque
+increment RMS + 0.1 × torque RMS + saturation ticks. Coefficients encode an
+explicit preference, not physical energy. Eight-second ramp/cruise checks at
++2500, -2500, 1000, 5000 counts/s showed motor peak error ≤48, load peak ≤83,
+and no clamp hits. A lower score on this search does not prove robustness.
+
 ## Why the baseline trace is jumpy
 
 The default plant is a disturbance/stick-slip stress case, not a smooth reference
