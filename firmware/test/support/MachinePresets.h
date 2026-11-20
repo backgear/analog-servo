@@ -84,9 +84,16 @@ static const ControlGains kNema23LeadscrewGains = {
  * spindle-motor conversion, and a direct extension of this project's own
  * (currently stub) worked example at
  * docs/examples/brushed-dc-magnetic-encoder.md.
- *   - Cogging torque: none modeled. Brushed DC motors don't have PM
- *     cogging (commutation ripple is a real, different effect this sim
- *     doesn't model yet).
+ *   - Periodic torque ripple: present, but representing commutation
+ *     ripple (brush/commutator-segment switching), not magnetic cogging
+ *     -- brushed DC motors have no PM rotor to cog against. Same
+ *     coggingAmplitude/coggingPeriodCounts primitive as the NEMA 23
+ *     preset (deliberately simplified -- a plain sinusoid, not a
+ *     detailed commutation model), just with a much shorter period and
+ *     smaller amplitude: commutation ripple is tied to the commutator's
+ *     segment count (many per revolution, so a short spatial period)
+ *     and is usually a smaller fraction of available torque than PM
+ *     cogging.
  *   - Stiction: present but low -- ordinary bearing/brush drag, not a
  *     dry sliding way. Modeled on the load (spindle shaft) side.
  *   - Inertia: very large relative to the NEMA 23 case -- the flywheel
@@ -102,6 +109,7 @@ static const ControlGains kNema23LeadscrewGains = {
  */
 static const ToyPlantParams kTreadmillSpindleMotor = {
   .inertia = 4000.0, .ampAlpha = 0.6, .friction = 0.05,
+  .coggingAmplitude = 15.0, .coggingPeriodCounts = 5.0,   /* commutation ripple, not cogging */
 };
 static const ToyPlantParams kTreadmillSpindleLoad = {
   .inertia = 200.0, .friction = 0.02, .stictionLimit = 15.0, .coulombLevel = 8.0,

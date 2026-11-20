@@ -24,10 +24,17 @@
  *     viscous-only behavior.
  *   - gravityBias: a constant force subtracted every tick (a vertical-
  *     axis-style load). 0 disables.
- *   - coggingAmplitude / coggingPeriodCounts: a POSITION-dependent (not
- *     velocity-dependent) sinusoidal disturbance -- the magnetic detent
- *     torque a PM stepper/servo rotor has that a brushed DC motor does
- *     not. 0 disables.
+ *   - coggingAmplitude / coggingPeriodCounts: a generic POSITION-dependent
+ *     (not velocity-dependent) sinusoidal torque ripple, period expressed
+ *     in encoder counts. Deliberately simplified rather than modeling the
+ *     underlying magnetics/commutation in any detail (saturation, dead-
+ *     time, etc.) -- a single sinusoid stands in for whichever periodic
+ *     effect is relevant: PM rotor magnetic cogging (longer period, a
+ *     few % of available torque is typical) or brushed-DC commutation
+ *     ripple (much shorter period/higher frequency, tied to commutator
+ *     segment count, usually smaller amplitude) -- same field, caller's
+ *     choice of period/amplitude picks which one it represents. 0
+ *     disables it entirely.
  *
  * Every new field defaults to 0 via designated initializers, so existing
  * callers (the zero-lag and "realistic" plants from earlier commits) are
@@ -61,7 +68,9 @@ typedef struct {
                                     velocity (or opposing the driving force at the instant of
                                     breakaway). Independent of speed, unlike viscous friction. */
   double gravityBias;           /* constant force subtracted every tick. 0 disables. */
-  double coggingAmplitude;      /* 0 disables the position-dependent ripple entirely. */
+  double coggingAmplitude;      /* generic periodic torque ripple (cogging OR commutation --
+                                    caller's choice, see the file header comment). 0 disables
+                                    the position-dependent ripple entirely. */
   double coggingPeriodCounts;   /* spatial period of the ripple, in encoder counts. Ignored if
                                     coggingAmplitude is 0. */
   double frictionBumpCenter;    /* position (counts) of a ONE-OFF localized patch of extra

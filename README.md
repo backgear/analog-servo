@@ -23,7 +23,7 @@ be well-supported by existing manufacturers.
 
 ![Simulated, PROTOTYPE, same comparison but against a plant with real inertia + amplifier bandwidth lag + friction (gains hand-tuned for it) -- actual velocity visibly tracks the ramp in real time with feedforward instead of lagging it, at nearly no extra torque chatter](assets/stepdir-feedforward-realistic-plant-demo.png)
 
-![Simulated, representative -- not measurements of any specific real machine: two named mechanisms (NEMA 23 lead-screw mill X-axis with a Lovejoy coupling and cogging; treadmill motor spindle with a belt coupling and no cogging) tracking the same ramped/jittered pulse train, each with its own hand-tuned gains](assets/stepdir-machine-presets-demo.png)
+![Simulated, representative -- not measurements of any specific real machine: two named mechanisms (NEMA 23 lead-screw mill X-axis with a Lovejoy coupling and magnetic cogging; treadmill motor spindle with a belt coupling and brushed-DC commutation ripple instead) tracking the same ramped/jittered pulse train, each with its own hand-tuned gains](assets/stepdir-machine-presets-demo.png)
 
 These six are all generated, not captured -- see `tools/stepdir_pulse_demo.py`
 (regenerate all six in place after a `Control.c` change with
