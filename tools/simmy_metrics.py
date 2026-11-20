@@ -9,6 +9,41 @@ def rms(values):
     return math.sqrt(sum(v * v for v in values) / len(values))
 
 
+def hold_metrics(frames, band_counts=5, velocity_band=1, dwell_seconds=0.25):
+    """Settle only if both error and speed stay in band to the hold's end.
+
+    A suffix shorter than dwell_seconds is not sufficient evidence. None means
+    'not settled within this recorded hold', never zero or missing evidence.
+    """
+    holds = []
+    start = 0
+    while start < len(frames):
+        phase = frames[start].get('phase', '')
+        end = start + 1
+        while end < len(frames) and frames[end].get('phase', '') == phase:
+            end += 1
+        if 'hold' in phase:
+            data = frames[start:end]
+            record = dict(phase=phase, start=data[0]['t'], end=data[-1]['t'] + 0.001,
+                          band_counts=band_counts, velocity_band=velocity_band,
+                          dwell_seconds=dwell_seconds, torque_rms=rms(f['torque'] for f in data),
+                          torque_delta_rms=rms(b['torque'] - a['torque']
+                                              for a, b in zip(data, data[1:])))
+            for label, key, velocity in (('motor', 'position', 'velocity'),
+                                         ('load', 'load_position', 'load_velocity')):
+                bad = [i for i, f in enumerate(data)
+                       if abs(f['cmd_position'] - f[key]) > band_counts
+                       or abs(f[velocity]) > velocity_band]
+                first = bad[-1] + 1 if bad else 0
+                enough = (len(data) - first) * 0.001 >= dwell_seconds
+                record[label + '_settling_seconds'] = (
+                    data[first]['t'] - data[0]['t'] if enough else None)
+                record[label + '_final_error'] = data[-1]['cmd_position'] - data[-1][key]
+            holds.append(record)
+        start = end
+    return holds
+
+
 def measure(frames, torque_limit=1000):
     if not frames:
         raise ValueError('cannot score an empty run')
@@ -21,6 +56,7 @@ def measure(frames, torque_limit=1000):
     result.update(torque_rms=rms(torque),
                   torque_delta_rms=rms(b - a for a, b in zip(torque, torque[1:])),
                   saturation_ticks=sum(abs(t) >= torque_limit for t in torque))
+    result['holds'] = hold_metrics(frames)
     return result
 
 

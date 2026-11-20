@@ -41,9 +41,14 @@ def build_driver(build_dir, simmy):
     return binary
 
 
-def run_driver(binary, config, gains, ticks=2000, rate=2500, ramp_seconds=1, jitter=0.3):
+def sequence_ticks(ramp_seconds):
+    return 4 * int(math.floor(ramp_seconds * 1000 + 0.5)) + 6000
+
+
+def run_driver(binary, config, gains, ticks=2000, rate=2500, ramp_seconds=1, jitter=0.3,
+               scenario='ramp-cruise'):
     cmd = [str(binary), str(config), str(ticks), str(rate), str(ramp_seconds), str(jitter),
-           *map(str, gains)]
+           *map(str, gains), scenario]
     result = subprocess.run(cmd, check=True, capture_output=True, text=True)
     return json.loads(result.stdout)
 
@@ -54,7 +59,9 @@ def main():
                     default=Path(os.environ.get('SIMMY_DIR', '~/simmy')).expanduser())
     ap.add_argument('--config', type=Path, help='plant JSON (default: bundled representative two-mass model)')
     ap.add_argument('--out-dir', type=Path, default=ROOT / '.cache' / 'simmy')
-    ap.add_argument('--ticks', type=int, default=2000, help='1 kHz ticks (default: 2000)')
+    ap.add_argument('--scenario', choices=('ramp-cruise', 'sequence'), default='ramp-cruise',
+                    help='sequence: accelerate, cruise, stop, hold, reverse, stop, hold')
+    ap.add_argument('--ticks', type=int, help='1 kHz ticks (default: 2000 or complete sequence)')
     ap.add_argument('--rate', type=float, default=2500, help='signed pulse rate, counts/s')
     ap.add_argument('--ramp-seconds', type=float, default=1)
     ap.add_argument('--jitter', type=float, default=0.3)
@@ -69,12 +76,16 @@ def main():
     for name, value in zip(('pos_kp', 'vel_kp', 'vel_ki', 'filter_shift'), TUNES[args.tune]):
         if getattr(args, name) is None:
             setattr(args, name, value)
-    if not 2 <= args.ticks <= 1_000_000:
-        ap.error('--ticks must be between 2 and 1000000')
     if not all(math.isfinite(v) for v in (args.rate, args.ramp_seconds, args.jitter)):
         ap.error('rate, ramp, and jitter must be finite')
-    if args.ramp_seconds < 0 or not 0 <= args.jitter <= 1:
-        ap.error('ramp must be nonnegative; jitter must be between 0 and 1')
+    if not 0 <= args.ramp_seconds <= 1000 or not 0 <= args.jitter <= 1:
+        ap.error('ramp must be between 0 and 1000 seconds; jitter must be between 0 and 1')
+    if args.scenario == 'sequence' and args.ramp_seconds < 0.001:
+        ap.error('sequence requires --ramp-seconds >= 0.001')
+    if args.ticks is None:
+        args.ticks = sequence_ticks(args.ramp_seconds) if args.scenario == 'sequence' else 2000
+    if not 2 <= args.ticks <= 1_000_000:
+        ap.error('--ticks must be between 2 and 1000000')
     if abs(args.rate) * args.ticks / 1000 * (1 + args.jitter) > 2**30:
         ap.error('requested travel exceeds safe int32 position range')
     if any(not 0 <= v <= 32767 for v in (args.pos_kp, args.vel_kp, args.vel_ki)):
@@ -93,9 +104,11 @@ def main():
             ap.error(str(exc))
         frames = run_driver(binary, config,
                             (args.pos_kp, args.vel_kp, args.vel_ki, args.filter_shift),
-                            args.ticks, args.rate, args.ramp_seconds, args.jitter)
+                            args.ticks, args.rate, args.ramp_seconds, args.jitter, args.scenario)
     frames_path = out / 'frames.json'
     frames_path.write_text(json.dumps(frames) + '\n')
+    from simmy_metrics import measure
+    (out / 'metrics.json').write_text(json.dumps(measure(frames), indent=2) + '\n')
     # Preserve inputs separately: the frame list stays compatible with the
     # existing telemetry renderer, and runs remain attributable to revisions.
     def revision(repo):

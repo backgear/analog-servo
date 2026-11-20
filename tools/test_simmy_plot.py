@@ -77,6 +77,28 @@ class SimmyPlotTests(unittest.TestCase):
             self.assertEqual(balanced['saturation_ticks'], 0)
             self.assertEqual(json.loads((out / 'run.json').read_text())['filter_shift'], 1)
 
+    def test_sequence_stops_holds_and_reverses_without_reset(self):
+        from simmy_metrics import measure
+        with tempfile.TemporaryDirectory() as tmp:
+            frames = self.run_simulation(Path(tmp), '--scenario', 'sequence', '--tune', 'balanced')
+            self.assertEqual(len(frames), 10000)
+            self.assertEqual(frames[0]['phase'], 'forward-accel')
+            self.assertEqual(frames[3000]['phase'], 'forward-hold')
+            self.assertEqual(frames[5000]['phase'], 'reverse-accel')
+            self.assertEqual(frames[8000]['phase'], 'final-hold')
+            for start, end in ((3000, 5000), (8000, 10000)):
+                self.assertEqual(len({f['cmd_position'] for f in frames[start:end]}), 1)
+                self.assertTrue(all(f['target_rate'] == 0 for f in frames[start:end]))
+            self.assertLess(frames[7999]['cmd_position'], frames[5000]['cmd_position'])
+            self.assertEqual(frames[4999]['cmd_position'], frames[5000]['cmd_position'])
+            metrics = measure(frames)
+            self.assertEqual(len(metrics['holds']), 2)
+            self.assertEqual(metrics['saturation_ticks'], 0)
+            self.assertLess(metrics['motor_peak'], 100)
+            self.assertLess(metrics['load_peak'], 150)
+            self.assertEqual(frames, self.run_simulation(Path(tmp), '--scenario', 'sequence',
+                                                       '--tune', 'balanced'))
+
     def test_negative_rate(self):
         with tempfile.TemporaryDirectory() as tmp:
             frames = self.run_simulation(Path(tmp), '--rate', '-2500')

@@ -95,13 +95,38 @@ Both position panels use the feedback body's initial position as their common
 origin, so load offsets are not hidden. The first panel's “actual” trace is the
 configured feedback body; captures without load fields keep three panels. Seeds are fixed for
 repeatable pulse jitter and analog noise. Negative `--rate` is supported;
-the initial runner ramps once then cruises, not a forward/reverse sequence.
+the default `ramp-cruise` scenario ramps once then cruises. Use
+`--scenario sequence` for a complete move/stop/reverse experiment.
 
 A subprocess + JSON is deliberately the first integration: no Python C ABI,
 shared-library lifecycle, or per-tick Python overhead. Consider ctypes/cffi or
 pybind11 later only if interactive Python needs to step the plant or replace
 controllers in-process. CSV is another suitable batch boundary, but JSON
 already fits this repo's telemetry plotter unchanged.
+
+## Complete move sequence and settling
+
+```sh
+python3 tools/simmy_plot.py --scenario sequence --tune balanced --out-dir .cache/simmy-sequence
+```
+
+Without `--ticks`, this runs the entire sequence (10 seconds at the default
+one-second ramp). Each direction has acceleration, a one-second cruise,
+deceleration, and a two-second hold. The state of the pulse source, plant and
+controller is continuous: there is no integrator reset or artificial position
+snap at either stop or reversal. Ramp durations are rounded to integer 1 ms
+ticks. The default boundaries are 0/1/2/3/5/6/7/8/10 seconds. `phase` and
+`target_rate` are saved on each frame; jitter means return position need not
+be exactly zero. Explicit `--ticks` may truncate or extend the experiment.
+
+Every run also writes `metrics.json`, including motor/load RMS and peak error,
+torque RMS, torque-increment RMS, exact clamp-hit counts and hold measurements.
+Settling requires absolute error ≤5 counts AND absolute velocity ≤1 count/tick
+for all remaining samples in the recorded hold, with at least 250 ms of such
+evidence. `null` means not settled in that observation window, not success.
+These thresholds are explicit evaluation choices, not hardware specifications.
+The balanced preset's two default holds do not meet this criterion: residual
+standstill oscillation remains despite much better tracking during motion.
 
 ## Simulation-specific optimized tune
 
@@ -137,8 +162,9 @@ The improvement costs increased torque activity; no filtering is applied to
 hide that in the graph. Load tracking is still worse than motor tracking due
 to the compliant/frictional plant. Eight-second runs at +2500, -2500, 1000 and
 5000 counts/s had motor peak errors ≤27 counts and load peak errors ≤65 counts,
-with no clamp hits. These checks do not cover stopping, rapid reversal,
-parameter uncertainty, noise robustness or real hardware stability. Integration
+with no clamp hits. The separate full-sequence experiment covers stopping and reversal after a
+hold, but these checks do not cover rapid reversal, parameter uncertainty,
+noise robustness or real hardware stability. Integration
 tests retain the baseline case and guard motor/load error for the tuned cases.
 
 ## Balanced, lower-chatter preset
