@@ -46,9 +46,9 @@ def sequence_ticks(ramp_seconds):
 
 
 def run_driver(binary, config, gains, ticks=2000, rate=2500, ramp_seconds=1, jitter=0.3,
-               scenario='ramp-cruise'):
+               scenario='ramp-cruise', feedforward='none', ff_shift=3, accel_ff_q8=18432):
     cmd = [str(binary), str(config), str(ticks), str(rate), str(ramp_seconds), str(jitter),
-           *map(str, gains), scenario]
+           *map(str, gains), scenario, feedforward, str(ff_shift), str(accel_ff_q8)]
     result = subprocess.run(cmd, check=True, capture_output=True, text=True)
     return json.loads(result.stdout)
 
@@ -71,6 +71,12 @@ def main():
     ap.add_argument('--vel-kp', type=int, help='override preset: raw Q8.8 integer')
     ap.add_argument('--vel-ki', type=int, help='override preset: raw Q8.8 integer, per tick')
     ap.add_argument('--filter-shift', type=int, choices=range(5), help='override preset velocity filter')
+    ap.add_argument('--feedforward', choices=('none', 'velocity', 'velocity-acceleration'),
+                    default='none', help='EXPERIMENTAL Mode A path; never changes firmware')
+    ap.add_argument('--ff-shift', type=int, choices=range(9), default=3,
+                    help='causal pulse-delta IIR shift (0 raw; default 3)')
+    ap.add_argument('--accel-ff-q8', type=int, default=18432,
+                    help='torque per count/tick², raw Q8.8; only velocity-acceleration mode')
     ap.add_argument('--no-plot', action='store_true', help='only build/run/save JSON; no matplotlib needed')
     args = ap.parse_args()
     for name, value in zip(('pos_kp', 'vel_kp', 'vel_ki', 'filter_shift'), TUNES[args.tune]):
@@ -91,6 +97,8 @@ def main():
     if any(not 0 <= v <= 32767 for v in (args.pos_kp, args.vel_kp, args.vel_ki)):
         ap.error('raw Q8.8 gains must be between 0 and 32767')
 
+    if not 0 <= args.accel_ff_q8 <= 32767:
+        ap.error('--accel-ff-q8 must be between 0 and 32767')
     simmy = args.simmy_dir.expanduser().resolve()
     config = (args.config or ROOT / 'tools' / 'simmy' / 'two_mass.json').expanduser().resolve()
     if not config.is_file():
@@ -104,7 +112,8 @@ def main():
             ap.error(str(exc))
         frames = run_driver(binary, config,
                             (args.pos_kp, args.vel_kp, args.vel_ki, args.filter_shift),
-                            args.ticks, args.rate, args.ramp_seconds, args.jitter, args.scenario)
+                            args.ticks, args.rate, args.ramp_seconds, args.jitter, args.scenario,
+                            args.feedforward, args.ff_shift, args.accel_ff_q8)
     frames_path = out / 'frames.json'
     frames_path.write_text(json.dumps(frames) + '\n')
     from simmy_metrics import measure
@@ -119,13 +128,17 @@ def main():
     metadata.update(simulated=True, firmware_revision=revision(ROOT),
                     simmy_revision=revision(simmy), simmy_dir=str(simmy),
                     plant=json.loads(config.read_text()), tick_hz=1000,
-                    torque_clamp=[-1000, 1000])
+                    torque_clamp=[-1000, 1000],
+                    effective_accel_ff_q8=(args.accel_ff_q8
+                                           if args.feedforward == 'velocity-acceleration' else 0))
     (out / 'run.json').write_text(json.dumps(metadata, indent=2) + '\n')
     print(f'Saved {frames_path}', flush=True)
     if not args.no_plot:
         subprocess.run([sys.executable, str(ROOT / 'tools/plot_telemetry.py'),
                         '--frames', str(frames_path), '--out', str(out / 'telemetry.png'),
-                        '--title', 'Control.c + simmy — SIMULATED, not a bench capture'], check=True)
+                        '--title', ('Control.c + simmy — SIMULATED, not a bench capture'
+                                    + (f'\nEXPERIMENTAL {args.feedforward} feedforward'
+                                       if args.feedforward != 'none' else ''))], check=True)
 
 
 if __name__ == '__main__':

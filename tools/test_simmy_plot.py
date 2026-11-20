@@ -99,6 +99,29 @@ class SimmyPlotTests(unittest.TestCase):
             self.assertEqual(frames, self.run_simulation(Path(tmp), '--scenario', 'sequence',
                                                        '--tune', 'balanced'))
 
+    def test_feedforward_is_causal_and_acceleration_is_separate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            velocity = self.run_simulation(out, '--tune', 'balanced', '--feedforward', 'velocity')
+            prefix = self.run_simulation(out, '--tune', 'balanced', '--feedforward', 'velocity',
+                                         '--ticks', '200')
+            self.assertEqual(prefix, velocity[:200])
+            reference = 0
+            previous = 0
+            for f in velocity:
+                self.assertEqual(f['cmd_position'] - previous, f['pulse_delta'])
+                previous = f['cmd_position']
+                reference += int((f['pulse_delta'] * 256 - reference) / 8)
+                self.assertEqual(reference, f['reference_velocity_q8'])
+            accel_zero = self.run_simulation(out, '--tune', 'balanced', '--feedforward',
+                                             'velocity-acceleration', '--accel-ff-q8', '0')
+            self.assertEqual(velocity, accel_zero)
+            accel = self.run_simulation(out, '--tune', 'balanced', '--feedforward',
+                                        'velocity-acceleration')
+            self.assertNotEqual(velocity, accel)
+            self.assertTrue(all(abs(f['torque']) <= 1000 for f in accel))
+            self.assertEqual(json.loads((out / 'run.json').read_text())['effective_accel_ff_q8'], 18432)
+
     def test_negative_rate(self):
         with tempfile.TemporaryDirectory() as tmp:
             frames = self.run_simulation(Path(tmp), '--rate', '-2500')

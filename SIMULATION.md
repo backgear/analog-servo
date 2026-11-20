@@ -75,8 +75,9 @@ quantized feedback → real ControlTick() → integer torque command
 
 `firmware/test/support/simmy_plot_main.c` owns the C loop. It links `Control.c`
 and simmy's three `.c` files directly, avoiding stale prebuilt archives. A
-`SimmyControllerFn` adapter calls `ControlTick()` with no feedforward, matching
-the current Mode A entry path. This does **not** run Mode B/C's trajectory
+`SimmyControllerFn` adapter defaults to `ControlTick()` with no feedforward,
+matching the current Mode A entry path. Opt-in feedforward experiments use
+`ControlTickWithReferenceQ8()` instead. This does **not** run Mode B/C's trajectory
 pipeline; changes to Ramp.c, PositionMove.c, or main.c are not exercised here.
 
 The clock is fixed at 1 kHz (32000 CPU cycles at 32 MHz); PI gains are per tick.
@@ -224,14 +225,51 @@ can reduce the baseline tracking lag: at 2500 counts/s and `posGainQ8=32`, a
 pure position P loop needs about `(2500/1000)/(32/256) = 20` counts of error to
 request the cruise speed. It does not by itself compensate static friction or
 ripple. Acceleration feedforward is a separate, model-dependent torque term
-for acceleration, not a general cure for cruise-speed disturbances. This
-runner currently uses neither feedforward path.
+for acceleration, not a general cure for cruise-speed disturbances. The default run uses neither feedforward path; both are opt-in experiments.
 
 For a smooth baseline, disable the deliberate disturbances first, then add
 ripple, friction, compliance and jitter back separately. Tune against motor
 **and load** motion, not just the motor encoder. Treat any proposed feedforward,
 friction compensation or revised gains as a separate experiment; do not hide
 real tracking error by smoothing the plotted position/error traces.
+
+## Experimental feedforward comparisons
+
+```sh
+python3 tools/simmy_plot.py --scenario sequence --tune balanced --feedforward velocity
+python3 tools/simmy_plot.py --scenario sequence --tune balanced --feedforward velocity-acceleration
+```
+
+These are **EXPERIMENTAL Mode A paths, not current production Mode A behavior**.
+The reference is generated solely from this tick's quantized pulse increment:
+`referenceQ8 += (delta*256 - referenceQ8) / (1 << ff_shift)` with C integer
+truncation. `--ff-shift 3` is default; 0 exposes raw counts. The estimator starts
+at zero and retains its state through stops and reversals. It does not read
+analytic `target_rate`, future position samples, motor/load velocity or plant
+parameters. Frames expose `pulse_delta` and `reference_velocity_q8` so this
+causality can be checked. Velocity feedforward changes the speed reference,
+not a direct friction-compensating torque command.
+
+The separate `velocity-acceleration` mode enables Control.c's existing causal
+acceleration-torque path with `--accel-ff-q8 18432` (72.0 raw command units per
+count/tick², based on the model's combined 64+8 inertias, not a fitted hardware
+coefficient). In other modes its effective gain is zero. This exploratory
+coefficient neglects compliance, amplifier lag and friction; acceleration
+feedforward is **not optimized** here. Control.c's existing anti-windup/clamp
+still applies. Set its gain to zero to reproduce velocity-only output exactly.
+
+For the balanced tune on the full default sequence:
+
+| Feedforward | Motor RMS | Load RMS | Torque RMS | Torque-increment RMS |
+| --- | ---: | ---: | ---: | ---: |
+| None | 11.2 | 15.6 | 61.3 | 15.0 |
+| Velocity | 11.4 | 15.3 | 62.1 | 15.0 |
+| Velocity + acceleration | 11.4 | 15.0 | 62.0 | 15.5 |
+
+None meets both bodies' settling criterion during the holds. Feedforward is
+not a clear general improvement on this strong-friction/ripple model at these
+gains; keep the no-feedforward case as the reference. Changes to firmware
+behavior require independent review and bench validation.
 
 ## External repositories and PlatformIO: no submodule required
 
