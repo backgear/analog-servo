@@ -48,11 +48,12 @@ hardware paths and control experiments live on separate branches — see
   feedforward PROTOTYPE (not current production Mode A behavior -- see
   `test_stepdir_control.c`) against a zero-lag toy plant, a more
   realistic one (`ToyPlant.h`: inertia + amplifier bandwidth lag +
-  friction + stiction + cogging, with gains hand-tuned specifically for
-  it), and two named-machine presets built on `ToyPlant.h`'s two-mass
-  compliant-coupling model (`MachinePresets.h`: a NEMA 23 lead-screw
-  mill X-axis, a treadmill motor spindle -- representative ratios, not
-  measured), then reuses `plot_telemetry.py` unchanged on the result;
+  friction + stiction + cogging + a one-off localized friction "speed
+  bump", with gains hand-tuned specifically for it), and two named-
+  machine presets built on `ToyPlant.h`'s two-mass compliant-coupling
+  model (`MachinePresets.h`: a NEMA 23 lead-screw mill X-axis, a
+  treadmill motor spindle -- representative ratios, not measured), then
+  reuses `plot_telemetry.py` unchanged on the result;
   run with no arguments to regenerate all six `assets/stepdir-*.png` in
   place after a `Control.c` change).
 

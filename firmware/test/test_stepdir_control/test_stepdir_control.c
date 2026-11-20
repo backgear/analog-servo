@@ -640,6 +640,26 @@ static void test_prototype_nema23_leadscrew_preset_jittered_is_stable(void) {
   TEST_ASSERT_TRUE(r.pegTicks <= 20);
 }
 
+/* Confirms the friction bump actually does something -- without it,
+ * crossing the same stretch of travel produces visibly less following
+ * error than with it (131 -> 275 at cruise, calibrated; see
+ * MachinePresets.h). Not just "the preset is still stable with a bump
+ * somewhere in it" (the test above already covers that) -- this pins
+ * down that the bump is a real, measurable local disturbance, not a
+ * no-op. */
+static void test_prototype_nema23_friction_bump_increases_local_error(void) {
+  ToyPlantParams loadWithoutBump = kNema23LeadscrewLoad;
+  loadWithoutBump.frictionBumpHalfWidth = 0.0;   /* disables the bump, same base stiction/coulomb */
+
+  MachinePresetTrialResult withoutBump = RunMachinePresetTrial(
+      &kNema23LeadscrewMotor, &loadWithoutBump, &kNema23LeadscrewCoupling,
+      &kNema23LeadscrewGains, 2500.0, 1.0, 0.0, 1000, 1000);
+  MachinePresetTrialResult withBump = RunMachinePresetTrial(
+      &kNema23LeadscrewMotor, &kNema23LeadscrewLoad, &kNema23LeadscrewCoupling,
+      &kNema23LeadscrewGains, 2500.0, 1.0, 0.0, 1000, 1000);
+  TEST_ASSERT_TRUE(withBump.maxErrCruise > withoutBump.maxErrCruise);
+}
+
 static void test_prototype_treadmill_spindle_preset_clean_is_stable(void) {
   MachinePresetTrialResult r = RunMachinePresetTrial(
       &kTreadmillSpindleMotor, &kTreadmillSpindleLoad, &kTreadmillSpindleCoupling,
@@ -713,6 +733,7 @@ int main(void) {
   RUN_TEST(test_prototype_realistic_plant_smoothed_feedforward_beats_raw_feedforward_chatter);
   RUN_TEST(test_prototype_nema23_leadscrew_preset_clean_is_stable);
   RUN_TEST(test_prototype_nema23_leadscrew_preset_jittered_is_stable);
+  RUN_TEST(test_prototype_nema23_friction_bump_increases_local_error);
   RUN_TEST(test_prototype_treadmill_spindle_preset_clean_is_stable);
   RUN_TEST(test_prototype_treadmill_spindle_preset_jittered_is_stable);
   RUN_TEST(test_filter_shift_one_stays_bounded_under_jitter);

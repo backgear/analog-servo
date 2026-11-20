@@ -49,6 +49,11 @@ a rendering artifact. It still stays within this sim's bounded-error/no-
 clamp-pegging bar (see the PROTOTYPE tests), but it's a reminder that
 "stable by that bar" and "smooth" aren't the same thing -- exactly the kind
 of distinction a real bench rig would be needed to confirm either way.
+The NEMA 23 preset's load also carries a one-off "speed bump" -- a
+localized patch of extra friction (a dusty/less-greased section of way,
+not a recurring effect like cogging) -- visible as the single larger
+torque/velocity spike around t=1.3s in that panel, distinct from the
+regular stick-slip ripple either side of it.
 
 **Q: Is this going to produce better results than a Teknic Clearpath?**
 A: No, almost certainly not.

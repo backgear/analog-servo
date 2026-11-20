@@ -64,6 +64,17 @@ typedef struct {
   double coggingAmplitude;      /* 0 disables the position-dependent ripple entirely. */
   double coggingPeriodCounts;   /* spatial period of the ripple, in encoder counts. Ignored if
                                     coggingAmplitude is 0. */
+  double frictionBumpCenter;    /* position (counts) of a ONE-OFF localized patch of extra
+                                    friction -- a dusty/less-greased section of a way or screw,
+                                    not a recurring/periodic effect like cogging. */
+  double frictionBumpHalfWidth; /* counts -- half-width of the affected window. 0 disables the
+                                    bump entirely (frictionBumpCenter/Extra are then ignored). */
+  double frictionBumpExtra;     /* added to BOTH stictionLimit and coulombLevel while position is
+                                    within the window -- a dustier/drier patch resists both
+                                    starting and continuing to slide through it. Works even if
+                                    stictionLimit/coulombLevel are otherwise 0 (an axis with no
+                                    stiction anywhere except this one patch is a reasonable thing
+                                    to model too). */
 } ToyPlantParams;
 
 #define TOY_PLANT_PARAMS_IDEALIZED { .inertia = 16.0, .ampAlpha = 1.0, .friction = 0.0 }
@@ -94,19 +105,30 @@ static inline void ToyPlantMechanicalStep(ToyPlantState *s, const ToyPlantParams
         sin(2.0 * 3.14159265358979323846 * s->position / p->coggingPeriodCounts);
   }
 
-  if (p->stictionLimit > 0.0 && fabs(s->velocity) < TOY_PLANT_STICTION_VELOCITY_EPSILON &&
-      fabs(drivingForce) <= p->stictionLimit) {
+  double stictionLimit = p->stictionLimit;
+  double coulombLevel = p->coulombLevel;
+  if (p->frictionBumpHalfWidth > 0.0 &&
+      fabs(s->position - p->frictionBumpCenter) <= p->frictionBumpHalfWidth) {
+    /* A one-off localized patch (a dusty/less-greased section), not a
+     * recurring effect -- resists both starting and continuing to slide
+     * through it, on top of whatever friction already applies elsewhere. */
+    stictionLimit += p->frictionBumpExtra;
+    coulombLevel += p->frictionBumpExtra;
+  }
+
+  if (stictionLimit > 0.0 && fabs(s->velocity) < TOY_PLANT_STICTION_VELOCITY_EPSILON &&
+      fabs(drivingForce) <= stictionLimit) {
     s->velocity = 0.0;   /* stuck: driving force can't overcome static friction -- don't
                              integrate at all, rather than let it creep/chatter */
     return;
   }
 
   double frictionForce = p->friction * s->velocity;
-  if (p->coulombLevel > 0.0) {
+  if (coulombLevel > 0.0) {
     double slideDirection = (fabs(s->velocity) < TOY_PLANT_STICTION_VELOCITY_EPSILON)
         ? (drivingForce > 0.0 ? 1.0 : -1.0)      /* breaking away -- follow the driving force */
         : (s->velocity > 0.0 ? 1.0 : -1.0);       /* already sliding -- oppose actual motion */
-    frictionForce += p->coulombLevel * slideDirection;
+    frictionForce += coulombLevel * slideDirection;
   }
   s->velocity += (drivingForce - frictionForce) / p->inertia * dt;
   s->position += s->velocity * dt;

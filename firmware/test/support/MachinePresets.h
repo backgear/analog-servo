@@ -48,6 +48,12 @@
  *     bandwidth (a well-chosen coupling should be nearly invisible to
  *     the control loop, not a source of trouble).
  *   - Gravity: none (horizontal axis).
+ *   - Friction bump: one localized patch of extra friction on the load
+ *     (a dusty/less-greased stretch of way), NOT a recurring effect like
+ *     cogging -- see kNema23LeadscrewLoad. Measured effect on this gain
+ *     set: following error at cruise roughly doubles while crossing it
+ *     (131 -> 275 counts) but stays well short of the stability bound
+ *     tested in test_stepdir_control.c, and never causes clamp-pegging.
  */
 static const ToyPlantParams kNema23LeadscrewMotor = {
   .inertia = 64.0, .ampAlpha = 0.6, .friction = 0.02,
@@ -55,6 +61,12 @@ static const ToyPlantParams kNema23LeadscrewMotor = {
 };
 static const ToyPlantParams kNema23LeadscrewLoad = {
   .inertia = 8.0, .friction = 0.01, .stictionLimit = 80.0, .coulombLevel = 50.0,
+  /* A one-off "speed bump": a localized dusty/less-greased section of way,
+     not a recurring effect like cogging. Position/width/extra-friction
+     are representative, not measured -- picked to be a clearly visible
+     but non-catastrophic local disturbance (see the calibration note on
+     kNema23LeadscrewGains below). */
+  .frictionBumpCenter = 1800.0, .frictionBumpHalfWidth = 75.0, .frictionBumpExtra = 60.0,
 };
 static const CouplingParams kNema23LeadscrewCoupling = {
   .springK = 3.16, .springD = 1.0, .backlashGap = 0.5,
