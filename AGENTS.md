@@ -46,9 +46,12 @@ hardware paths and control experiments live on separate branches — see
   `firmware/test/support/stepdir_pulse_demo_main.c` against synthetic
   pulse trains, clean/jittered/ramped/filter-shift-varied, plus a
   feedforward PROTOTYPE (not current production Mode A behavior -- see
-  `test_stepdir_control.c`), then reuses `plot_telemetry.py` unchanged on
-  the result; run with no arguments to regenerate all four
-  `assets/stepdir-*.png` in place after a `Control.c` change).
+  `test_stepdir_control.c`) against both a zero-lag toy plant and a more
+  realistic one (`ToyPlant.h`: inertia + amplifier bandwidth lag +
+  friction, with gains hand-tuned specifically for it), then reuses
+  `plot_telemetry.py` unchanged on the result; run with no arguments to
+  regenerate all five `assets/stepdir-*.png` in place after a `Control.c`
+  change).
 
 ## Branch convention
 

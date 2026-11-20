@@ -22,9 +22,10 @@ after a Control.c change -- run it with no arguments:
     python3 tools/stepdir_pulse_demo.py
 
 writes assets/stepdir-pulse-demo.png, assets/stepdir-ramp-demo.png,
-assets/stepdir-filter-shift-demo.png, and assets/stepdir-feedforward-demo.png
-in place. Pass --out-dir to write elsewhere instead (e.g. for a one-off
-comparison without touching the checked-in images).
+assets/stepdir-filter-shift-demo.png, assets/stepdir-feedforward-demo.png,
+and assets/stepdir-feedforward-realistic-plant-demo.png in place. Pass
+--out-dir to write elsewhere instead (e.g. for a one-off comparison without
+touching the checked-in images).
 """
 import argparse
 import json
@@ -54,7 +55,7 @@ def build_driver(build_dir):
 
 
 def run_segment(binary, rate, ticks, t0, jitter=0.0, ramp_seconds=0.0, filter_shift=0,
-                 feedforward=None, ff_shift=None):
+                 feedforward=None, ff_shift=None, plant=None):
     cmd = [str(binary), "--rate", str(rate), "--ticks", str(ticks),
            "--jitter", str(jitter), "--t0", str(t0)]
     if ramp_seconds:
@@ -65,6 +66,8 @@ def run_segment(binary, rate, ticks, t0, jitter=0.0, ramp_seconds=0.0, filter_sh
         cmd += ["--ff-shift", str(ff_shift)]
     if filter_shift:
         cmd += ["--filter-shift", str(filter_shift)]
+    if plant:
+        cmd += ["--plant", plant]
     out = subprocess.run(cmd, check=True, capture_output=True, text=True)
     return json.loads(out.stdout)
 
@@ -157,6 +160,34 @@ def build_feedforward_demo(binary, out, build_dir):
            build_dir)
 
 
+def build_feedforward_realistic_plant_demo(binary, out, build_dir):
+    """PROTOTYPE, not current production Mode A behavior. Same comparison
+    as build_feedforward_demo, but against ToyPlant.h's inertia/amp-lag/
+    friction model with gains hand-tuned specifically for it, instead of
+    the zero-lag plant -- see test_stepdir_control.c's "PROTOTYPE,
+    realistic plant" section. This is the one that actually answers "does
+    feedforward help on something resembling real hardware": with real
+    amplifier bandwidth and inertia already smoothing torque into motion,
+    smoothed feedforward keeps nearly all of raw feedforward's lag
+    improvement at almost none of its chatter cost -- unlike the zero-lag
+    plant above, where that chatter cost was real."""
+    rate, ramp_seconds, duration, gap = 20000, 0.1, 1.0, 0.5
+    ticks = int(duration * 1000)
+    segments = []
+    windows = []
+    t = 0.0
+    for label, ff, ff_shift in (("no feedforward (current production)", None, None),
+                               ("raw feedforward (naive)", "raw", None),
+                               ("smoothed feedforward, shift=3 (prototype)", "smoothed", 3)):
+        segments += run_segment(binary, rate, ticks, t, jitter=0.3, ramp_seconds=ramp_seconds,
+                                 feedforward=ff, ff_shift=ff_shift, plant="realistic")
+        windows.append((label, t, t + duration))
+        t += duration + gap
+    render(segments, windows, out,
+           "analog-servo Mode A (step/dir): feedforward w/ realistic inertia+amp lag -- SIMULATED",
+           build_dir)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -173,6 +204,8 @@ def main():
         build_ramp_demo(binary, out_dir / "stepdir-ramp-demo.png", build_dir)
         build_filter_shift_demo(binary, out_dir / "stepdir-filter-shift-demo.png", build_dir)
         build_feedforward_demo(binary, out_dir / "stepdir-feedforward-demo.png", build_dir)
+        build_feedforward_realistic_plant_demo(
+            binary, out_dir / "stepdir-feedforward-realistic-plant-demo.png", build_dir)
 
 
 if __name__ == "__main__":

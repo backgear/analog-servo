@@ -19,17 +19,21 @@ be well-supported by existing manufacturers.
 
 ![Simulated: velocityFilterShift vs. torque chatter -- a mild improvement at shift=1, a destabilizing trap at shift=3 with this gain set](assets/stepdir-filter-shift-demo.png)
 
-![Simulated, PROTOTYPE -- not current production behavior: no feedforward (today's Mode A) vs. raw vs. smoothed velocity feedforward, hardest (fast jittered ramp) scenario](assets/stepdir-feedforward-demo.png)
+![Simulated, PROTOTYPE -- not current production behavior: no feedforward (today's Mode A) vs. raw vs. smoothed velocity feedforward, hardest (fast jittered ramp) scenario, zero-lag toy plant](assets/stepdir-feedforward-demo.png)
 
-These four are all generated, not captured -- see `tools/stepdir_pulse_demo.py`
-(regenerate all four in place after a `Control.c` change with
-`python3 tools/stepdir_pulse_demo.py`, no arguments needed). The last one is
-a prototype, not what Mode A actually does today: it explores feeding
+![Simulated, PROTOTYPE, same comparison but against a plant with real inertia + amplifier bandwidth lag + friction (gains hand-tuned for it) -- actual velocity visibly tracks the ramp in real time with feedforward instead of lagging it, at nearly no extra torque chatter](assets/stepdir-feedforward-realistic-plant-demo.png)
+
+These five are all generated, not captured -- see `tools/stepdir_pulse_demo.py`
+(regenerate all five in place after a `Control.c` change with
+`python3 tools/stepdir_pulse_demo.py`, no arguments needed). The last two are
+a prototype, not what Mode A actually does today: they explore feeding
 `Control.c`'s existing feedforward path (already used by Mode B/C) from Mode
-A too. Shown at the hardest scenario tested, where the win is real but
-partial; on a more moderate ramp the smoothed version beats today's
-reactive-only tracking on both lag and chatter at once -- see
-`firmware/test/test_stepdir_control.c`'s PROTOTYPE section for the numbers.
+A too. The zero-lag-plant version shows a real tradeoff (less lag, more
+chatter); adding realistic plant dynamics and re-tuning the gains for them
+removes most of that tradeoff -- smoothed feedforward ends up clearly better
+on both lag and chatter. See `firmware/test/test_stepdir_control.c`'s two
+PROTOTYPE sections for the numbers and the gain-retuning caveat (a gain set
+tuned for one plant is not expected to stay stable against a different one).
 
 **Q: Is this going to produce better results than a Teknic Clearpath?**
 A: No, almost certainly not.

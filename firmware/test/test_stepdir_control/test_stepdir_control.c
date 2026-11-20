@@ -22,6 +22,7 @@
 #include <unity.h>
 #include "Control.h"
 #include "PulseTrain.h"
+#include "ToyPlant.h"
 #include "main.h"
 #include "Encoder.h"
 #include "Output.h"
@@ -444,6 +445,123 @@ static void test_prototype_smoothing_reduces_chatter_versus_raw_feedforward(void
   TEST_ASSERT_TRUE(smoothed.maxJumpCruise < raw.maxJumpCruise);
 }
 
+/* ---- PROTOTYPE, realistic plant: does the chatter penalty above survive
+ * once the plant isn't instant/zero-lag? The feedforward section just
+ * above uses the same zero-lag toy plant as the rest of this suite
+ * (velocity += torque/16 every tick, no amplifier bandwidth limit, no
+ * friction) -- fine for exercising Control.c's own math, but it means
+ * EVERY bit of torque ripple shows up immediately and fully as velocity
+ * ripple. A real motor+amplifier doesn't work that way: there's
+ * electrical bandwidth lag and mechanical inertia between a commanded
+ * torque and actual motion, both of which are themselves low-pass
+ * filters.
+ *
+ * Using ToyPlant.h's model (inertia=64, one-pole amp lag alpha=0.6,
+ * viscous friction=0.05 -- a deliberately "heavier and slower" plant than
+ * the zero-lag default, NOT a claim about any specific real hardware) with
+ * the SAME gains used above (posGainQ8=256, velGainKpQ8=512) goes
+ * unstable outright -- following error in the thousands, torque pinned
+ * against the clamp almost every tick, independent of feedforward mode.
+ * That's not a finding about feedforward, it's a reminder that a gain set
+ * is only ever valid for the plant it was matched to.
+ *
+ * Gains below (posGainQ8=8, velGainKpQ8=512, velGainKiQ8=1) were hand-
+ * tuned against this specific plant via a step-response grid search
+ * (target=5000, looking for no clamp-pegging and settling within ~1s) --
+ * not an autotune, not a claim of optimality, just "stable and
+ * reasonable" so the feedforward comparison below is fair rather than
+ * measuring instability. With THIS plant and THESE gains, the story
+ * changes a lot from the zero-lag section above: smoothed feedforward
+ * keeps nearly all of raw feedforward's big lag improvement while
+ * costing almost no extra chatter (maxJumpCruise ties or nearly ties the
+ * no-feedforward baseline, instead of roughly doubling it). ---------- */
+
+static const ToyPlantParams kRealisticPlant = {.inertia = 64.0, .ampAlpha = 0.6, .friction = 0.05};
+static const ControlGains kRealisticPlantGains = {
+  .posGainQ8 = 8,
+  .velGainKpQ8 = 512,
+  .velGainKiQ8 = 1,
+  .velocityClamp = 200000,
+  .torqueClampMin = -1000,
+  .torqueClampMax = 1000,
+};
+
+static FeedforwardTrialResult RunRampedPulseTrainTrialWithRealisticPlant(
+    double targetRateEdgesPerSec, double rampSeconds, double jitterFraction,
+    int accelTicks, int cruiseTicks, int32_t smoothShift) {
+  ControlGains g = kRealisticPlantGains;
+  ControlInit(&g);
+  PulseTrainState pt;
+  PulseTrainInit(&pt, kSeed);
+  ToyPlantState plant;
+  ToyPlantInit(&plant);
+  double accelRatePerSec2 = targetRateEdgesPerSec / rampSeconds;
+  int32_t posTargetAccum = 0, prevTorque = 0;
+  int64_t filteredDeltaQ8 = 0;
+  FeedforwardTrialResult result = {0, 0, 0};
+
+  int ticks = accelTicks + cruiseTicks;
+  for (int i = 0; i < ticks; i++) {
+    double rate = (i < accelTicks) ? (accelRatePerSec2 * i / kTickHz) : targetRateEdgesPerSec;
+    int32_t delta = PulseTrainTickDelta(&pt, rate, kTickHz, jitterFraction);
+    posTargetAccum += delta;
+    int32_t posActual = ToyPlantPositionCounts(&plant);
+    int32_t velActual = ToyPlantVelocityCounts(&plant);
+
+    int32_t torque;
+    if (smoothShift < -1) {   /* sentinel: no feedforward at all (current production) */
+      torque = ControlTick(posTargetAccum, posActual, velActual, kDt);
+    } else {
+      int64_t referenceVelocityQ8 = (int64_t)delta * 256;
+      if (smoothShift >= 0) {
+        filteredDeltaQ8 += (referenceVelocityQ8 - filteredDeltaQ8) >> smoothShift;
+        referenceVelocityQ8 = filteredDeltaQ8;
+      }
+      torque = ControlTickWithReferenceQ8(posTargetAccum, posActual, velActual, referenceVelocityQ8, kDt);
+    }
+
+    int32_t err = Abs32(posTargetAccum - posActual);
+    int32_t jump = Abs32(torque - prevTorque);
+    prevTorque = torque;
+    if (i < accelTicks) {
+      if (err > result.maxErrAccel) result.maxErrAccel = err;
+    } else {
+      if (err > result.maxErrCruise) result.maxErrCruise = err;
+      if (jump > result.maxJumpCruise) result.maxJumpCruise = jump;
+    }
+    ToyPlantStep(&plant, &kRealisticPlant, torque);
+  }
+  return result;
+}
+
+static void test_prototype_realistic_plant_smoothed_feedforward_beats_reactive_only_on_moderate_ramp(void) {
+  FeedforwardTrialResult noFF = RunRampedPulseTrainTrialWithRealisticPlant(2500.0, 1.0, 0.3, 1000, 1000, -2);
+  FeedforwardTrialResult smoothed = RunRampedPulseTrainTrialWithRealisticPlant(2500.0, 1.0, 0.3, 1000, 1000, 3);
+  TEST_ASSERT_TRUE(smoothed.maxErrAccel < noFF.maxErrAccel);
+  TEST_ASSERT_TRUE(smoothed.maxErrCruise < noFF.maxErrCruise);
+  TEST_ASSERT_TRUE(smoothed.maxJumpCruise <= noFF.maxJumpCruise + 5);   /* essentially no chatter
+                                                                             penalty, unlike the
+                                                                             zero-lag plant above */
+}
+
+static void test_prototype_realistic_plant_smoothed_feedforward_beats_reactive_only_on_fast_ramp(void) {
+  FeedforwardTrialResult noFF = RunRampedPulseTrainTrialWithRealisticPlant(20000.0, 0.1, 0.3, 100, 1900, -2);
+  FeedforwardTrialResult smoothed = RunRampedPulseTrainTrialWithRealisticPlant(20000.0, 0.1, 0.3, 100, 1900, 3);
+  TEST_ASSERT_TRUE(smoothed.maxErrAccel < noFF.maxErrAccel);
+  TEST_ASSERT_TRUE(smoothed.maxErrCruise < noFF.maxErrCruise);
+  TEST_ASSERT_TRUE(smoothed.maxJumpCruise <= noFF.maxJumpCruise + 15);
+}
+
+static void test_prototype_realistic_plant_smoothed_feedforward_beats_raw_feedforward_chatter(void) {
+  FeedforwardTrialResult raw = RunRampedPulseTrainTrialWithRealisticPlant(2500.0, 1.0, 0.3, 1000, 1000, -1);
+  FeedforwardTrialResult smoothed = RunRampedPulseTrainTrialWithRealisticPlant(2500.0, 1.0, 0.3, 1000, 1000, 3);
+  TEST_ASSERT_TRUE(smoothed.maxJumpCruise < raw.maxJumpCruise);
+
+  FeedforwardTrialResult rawFast = RunRampedPulseTrainTrialWithRealisticPlant(20000.0, 0.1, 0.3, 100, 1900, -1);
+  FeedforwardTrialResult smoothedFast = RunRampedPulseTrainTrialWithRealisticPlant(20000.0, 0.1, 0.3, 100, 1900, 3);
+  TEST_ASSERT_TRUE(smoothedFast.maxJumpCruise < rawFast.maxJumpCruise);
+}
+
 /* ---- velocityFilterShift -- does smoothing the measured velocity cut
  * down the reverse-torque chatter from pulse-train quantization? Measured
  * (seed 12345, 2500 edges/sec, last-quarter-of-run window): shift=0
@@ -494,6 +612,9 @@ int main(void) {
   RUN_TEST(test_prototype_smoothed_feedforward_beats_reactive_only_on_moderate_ramp);
   RUN_TEST(test_prototype_smoothed_feedforward_beats_reactive_only_on_fast_ramp);
   RUN_TEST(test_prototype_smoothing_reduces_chatter_versus_raw_feedforward);
+  RUN_TEST(test_prototype_realistic_plant_smoothed_feedforward_beats_reactive_only_on_moderate_ramp);
+  RUN_TEST(test_prototype_realistic_plant_smoothed_feedforward_beats_reactive_only_on_fast_ramp);
+  RUN_TEST(test_prototype_realistic_plant_smoothed_feedforward_beats_raw_feedforward_chatter);
   RUN_TEST(test_filter_shift_one_stays_bounded_under_jitter);
   return UNITY_END();
 }
