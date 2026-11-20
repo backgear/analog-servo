@@ -13,6 +13,8 @@ be well-supported by existing manufacturers.
 
 ![Bench telemetry: a sharp position step and a triangular velocity ramp, commanded vs. actual](assets/telemetry-demo.png)
 
+![Simulated (not a bench capture): Mode A (step/dir) tracking a synthetic pulse train, clean vs. with short-term timing jitter injected](assets/stepdir-pulse-demo.png)
+
 **Q: Is this going to produce better results than a Teknic Clearpath?**
 A: No, almost certainly not.
 

@@ -40,7 +40,12 @@ hardware paths and control experiments live on separate branches — see
   (turns a recorder directory into a `report.md` + plot — run this
   instead of hand-writing bench-results write-ups), `serial_console.py`
   (generic CLI), `sigrok/export_run.py` + `sigrok/capture_usb_concurrency.py`
-  + `sigrok-decoder-monitor/` (binary telemetry capture/decode/export).
+  + `sigrok-decoder-monitor/` (binary telemetry capture/decode/export),
+  `stepdir_pulse_demo.py` (a SIMULATED, not bench-captured, Mode A
+  step/dir tracking demo -- builds and runs
+  `firmware/test/support/stepdir_pulse_demo_main.c` against a synthetic
+  pulse train, clean and jittered, then reuses `plot_telemetry.py`
+  unchanged on the result).
 
 ## Branch convention
 
