@@ -5,9 +5,10 @@ built on monitor_frame.FrameSync produces).
 
 One column per --window (label:start:end, seconds, relative to the
 capture's first frame); with no --window given, plots the whole capture
-as a single column. Each column is three stacked panels (position,
-velocity, torque) rather than a dual-axis chart -- different units,
-different scales, so they get separate axes, not one shared one.
+as a single column. Each column has three stacked panels (position,
+velocity, torque). Position also shows signed following error (commanded
+minus actual, counts) on a separately scaled right axis. Error is not
+rebased at the window start.
 
 Usage:
     python3 plot_telemetry.py --frames /tmp/two_moves_frames.json \\
@@ -30,6 +31,7 @@ GRID = "#e1e0d9"
 BASELINE = "#c3c2b7"
 BLUE = "#2a78d6"
 ORANGE = "#eb6834"
+PURPLE = "#8856a7"
 
 
 def parse_window(spec):
@@ -51,6 +53,29 @@ def panel(ax, data, t0, cmd_key, act_key, color, cmd_label, act_label, ylabel, b
     ax.spines["left"].set_color(GRID)
     ax.spines["bottom"].set_color(GRID)
     ax.legend(frameon=False, fontsize=8, loc="upper right", labelcolor=INK_SECONDARY)
+
+
+def following_error_panel(ax, data, t0):
+    """Overlay true signed following error, independent of position rebasing."""
+    error_ax = ax.twinx()
+    error_ax.plot([f["t"] - t0 for f in data],
+                  [f["cmd_position"] - f["position"] for f in data],
+                  color=PURPLE, linewidth=1.2, alpha=0.85,
+                  linestyle="-.", label="following error (cmd − actual)")
+    error_ax.axhline(0, color=PURPLE, linewidth=0.6, alpha=0.3)
+    error_ax.set_ylabel("following error (ct)", color=PURPLE)
+    error_ax.tick_params(axis="y", colors=PURPLE)
+    error_ax.spines["top"].set_visible(False)
+    error_ax.spines["left"].set_visible(False)
+    error_ax.spines["bottom"].set_visible(False)
+    error_ax.spines["right"].set_color(PURPLE)
+    handles, labels = ax.get_legend_handles_labels()
+    error_handles, error_labels = error_ax.get_legend_handles_labels()
+    ax.get_legend().remove()
+    error_ax.legend(handles + error_handles, labels + error_labels,
+                    frameon=False, fontsize=7, loc="upper left",
+                    labelcolor=INK_SECONDARY)
+    return error_ax
 
 
 def main():
@@ -84,7 +109,7 @@ def main():
         "font.size": 10, "axes.titlesize": 11, "axes.titleweight": "bold",
         "axes.titlecolor": INK_PRIMARY, "grid.color": GRID, "grid.linewidth": 0.8,
     })
-    fig, axes = plt.subplots(3, n, figsize=(5.5 * n, 7.5), sharex="col", squeeze=False)
+    fig, axes = plt.subplots(3, n, figsize=(6.5 * n, 7.5), sharex="col", squeeze=False)
 
     any_fault = False
     for col, (label, start, end) in enumerate(windows):
@@ -96,6 +121,7 @@ def main():
         pos_baseline = data[0]["position"]
         panel(axes[0, col], data, wt0, "cmd_position", "position", BLUE, "commanded", "actual",
               "position (ct, rel. to window start)", baseline=pos_baseline)
+        following_error_panel(axes[0, col], data, wt0)
         panel(axes[1, col], data, wt0, "cmd_velocity", "velocity", ORANGE, "commanded", "actual", "velocity (ct/tick)")
         panel(axes[2, col], data, wt0, None, "torque", INK_PRIMARY, None, "torque.command", "torque")
         if label:

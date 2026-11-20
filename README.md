@@ -25,6 +25,12 @@ be well-supported by existing manufacturers.
 
 ![Simulated, representative -- not measurements of any specific real machine: two named mechanisms (NEMA 23 lead-screw mill X-axis with a Lovejoy coupling and magnetic cogging; treadmill motor spindle with a belt coupling and brushed-DC commutation ripple instead) tracking the same ramped/jittered pulse train, each with its own hand-tuned gains](assets/stepdir-machine-presets-demo.png)
 
+For plots using an external **simmy** checkout and the current `Control.c`, run
+`python3 tools/simmy_plot.py --simmy-dir ~/simmy` or
+`pio run -d firmware -e native -t simmy`. See [SIMULATION.md](SIMULATION.md)
+for setup, parameters, PlatformIO dependency options, and simulation limits.
+These outputs are synthetic, not bench-validated.
+
 These six are all generated, not captured -- see `tools/stepdir_pulse_demo.py`
 (regenerate all six in place after a `Control.c` change with
 `python3 tools/stepdir_pulse_demo.py`, no arguments needed). The feedforward
