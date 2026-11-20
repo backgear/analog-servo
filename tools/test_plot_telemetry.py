@@ -24,6 +24,18 @@ class FollowingErrorTests(unittest.TestCase):
         finally:
             plt.close(fig)
 
+    def test_load_error_uses_load_not_feedback_position(self):
+        data = [dict(t=0, cmd_position=100, position=99, load_position=80)]
+        fig, ax = plt.subplots()
+        try:
+            panel(ax, data, 0, 'cmd_position', 'load_position', BLUE,
+                  'commanded', 'load', 'load position', baseline=99)
+            error_ax = following_error_panel(ax, data, 0, 'load_position')
+            self.assertEqual(list(error_ax.lines[0].get_ydata()), [20])
+            self.assertEqual(list(ax.lines[2].get_ydata()), [-19])
+        finally:
+            plt.close(fig)
+
 
 if __name__ == '__main__':
     unittest.main()

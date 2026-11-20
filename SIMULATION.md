@@ -88,9 +88,12 @@ chain's gain stage and calibrated plant coefficients.
 Feedback is sampled before plant advancement. `cmd_velocity` is the cascade's
 velocity target, not pulse-source velocity. `fault_latched=false` is only a
 renderer compatibility field: no fault detector runs in this harness.
-`load_position`/`load_velocity` record the last body's quantized motion for
-analysis but are not currently drawn by the existing three-panel renderer;
-its “actual” trace is the configured feedback body. Seeds are fixed for
+`load_position`/`load_velocity` record the last body's quantized motion. When
+present on every frame, the renderer adds a separate load-position panel with
+signed load error on its right axis, and a load trace on the velocity panel.
+Both position panels use the feedback body's initial position as their common
+origin, so load offsets are not hidden. The first panel's “actual” trace is the
+configured feedback body; captures without load fields keep three panels. Seeds are fixed for
 repeatable pulse jitter and analog noise. Negative `--rate` is supported;
 the initial runner ramps once then cruises, not a forward/reverse sequence.
 

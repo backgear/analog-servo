@@ -8,7 +8,8 @@ capture's first frame); with no --window given, plots the whole capture
 as a single column. Each column has three stacked panels (position,
 velocity, torque). Position also shows signed following error (commanded
 minus actual, counts) on a separately scaled right axis. Error is not
-rebased at the window start.
+rebased at the window start. Frames with load_position/load_velocity add a
+separate load-position/error panel and a load-velocity trace.
 
 Usage:
     python3 plot_telemetry.py --frames /tmp/two_moves_frames.json \\
@@ -32,6 +33,7 @@ BASELINE = "#c3c2b7"
 BLUE = "#2a78d6"
 ORANGE = "#eb6834"
 PURPLE = "#8856a7"
+GREEN = "#258978"
 
 
 def parse_window(spec):
@@ -55,11 +57,11 @@ def panel(ax, data, t0, cmd_key, act_key, color, cmd_label, act_label, ylabel, b
     ax.legend(frameon=False, fontsize=8, loc="upper right", labelcolor=INK_SECONDARY)
 
 
-def following_error_panel(ax, data, t0):
+def following_error_panel(ax, data, t0, position_key="position"):
     """Overlay true signed following error, independent of position rebasing."""
     error_ax = ax.twinx()
     error_ax.plot([f["t"] - t0 for f in data],
-                  [f["cmd_position"] - f["position"] for f in data],
+                  [f["cmd_position"] - f[position_key] for f in data],
                   color=PURPLE, linewidth=1.2, alpha=0.85,
                   linestyle="-.", label="following error (cmd − actual)")
     error_ax.axhline(0, color=PURPLE, linewidth=0.6, alpha=0.3)
@@ -109,7 +111,11 @@ def main():
         "font.size": 10, "axes.titlesize": 11, "axes.titleweight": "bold",
         "axes.titlecolor": INK_PRIMARY, "grid.color": GRID, "grid.linewidth": 0.8,
     })
-    fig, axes = plt.subplots(3, n, figsize=(6.5 * n, 7.5), sharex="col", squeeze=False)
+    show_load = all('load_position' in f and 'load_velocity' in f for f in frames)
+    rows = 4 if show_load else 3
+    velocity_row, torque_row = rows - 2, rows - 1
+    fig, axes = plt.subplots(rows, n, figsize=(6.5 * n, 9.5 if show_load else 7.5),
+                             sharex="col", squeeze=False)
 
     any_fault = False
     for col, (label, start, end) in enumerate(windows):
@@ -122,11 +128,22 @@ def main():
         panel(axes[0, col], data, wt0, "cmd_position", "position", BLUE, "commanded", "actual",
               "position (ct, rel. to window start)", baseline=pos_baseline)
         following_error_panel(axes[0, col], data, wt0)
-        panel(axes[1, col], data, wt0, "cmd_velocity", "velocity", ORANGE, "commanded", "actual", "velocity (ct/tick)")
-        panel(axes[2, col], data, wt0, None, "torque", INK_PRIMARY, None, "torque.command", "torque")
+        if show_load:
+            panel(axes[1, col], data, wt0, "cmd_position", "load_position", GREEN,
+                  "commanded", "load", "load position (ct, same origin)", baseline=pos_baseline)
+            following_error_panel(axes[1, col], data, wt0, "load_position")
+        velocity_ax = axes[velocity_row, col]
+        panel(velocity_ax, data, wt0, "cmd_velocity", "velocity", ORANGE,
+              "cascade target", "feedback", "velocity (ct/tick)")
+        if show_load:
+            velocity_ax.plot([f['t'] - wt0 for f in data], [f['load_velocity'] for f in data],
+                             color=GREEN, linewidth=1, alpha=0.8, label="load")
+            velocity_ax.legend(frameon=False, fontsize=8, loc="upper right", labelcolor=INK_SECONDARY)
+        panel(axes[torque_row, col], data, wt0, None, "torque", INK_PRIMARY,
+              None, "torque.command", "torque")
         if label:
             axes[0, col].set_title(label)
-        axes[2, col].set_xlabel("time (s)")
+        axes[torque_row, col].set_xlabel("time (s)")
 
     fig.suptitle(args.title, color=INK_PRIMARY, fontsize=12, fontweight="bold", y=0.995)
     fig.tight_layout(rect=[0, 0, 1, 0.97])
