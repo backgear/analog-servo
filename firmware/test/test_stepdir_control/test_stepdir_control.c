@@ -23,6 +23,7 @@
 #include "Control.h"
 #include "PulseTrain.h"
 #include "ToyPlant.h"
+#include "MachinePresets.h"
 #include "main.h"
 #include "Encoder.h"
 #include "Output.h"
@@ -562,6 +563,101 @@ static void test_prototype_realistic_plant_smoothed_feedforward_beats_raw_feedfo
   TEST_ASSERT_TRUE(smoothedFast.maxJumpCruise < rawFast.maxJumpCruise);
 }
 
+/* ---- PROTOTYPE, named machine presets: MachinePresets.h bundles
+ * ToyPlant.h's two-mass compliant-coupling model (plus the stiction/
+ * cogging primitives added alongside it) into two recognizable
+ * mechanisms -- a NEMA 23 lead-screw mill X-axis (Lovejoy coupling,
+ * cogging, load-side stiction) and a treadmill motor spindle (belt
+ * coupling, very large inertia, no cogging). Representative ratios, not
+ * measurements of any specific real machine -- see MachinePresets.h's
+ * own header comment for the reasoning behind each parameter.
+ *
+ * These are sanity/stability checks, not the full feedforward matrix
+ * from the sections above: each preset's own hand-tuned gains (found via
+ * the same step-response grid-search process as every other gain set in
+ * this suite) should track a representative ramped pulse train, clean
+ * and jittered, without sustained torque-clamp pegging and with a
+ * following error that stays bounded. Calibrated (seed 12345, 2500
+ * edges/sec, 1s ramp + 1s cruise): nema23 maxErr ~130-215, zero pegged
+ * ticks; treadmill maxErr ~670-750, zero pegged ticks -- bounds below
+ * give ~2x margin on each. ------------------------------------------- */
+
+typedef struct {
+  int32_t maxErrAccel;
+  int32_t maxErrCruise;
+  int32_t pegTicks;
+} MachinePresetTrialResult;
+
+static MachinePresetTrialResult RunMachinePresetTrial(
+    const ToyPlantParams *motor, const ToyPlantParams *load, const CouplingParams *coupling,
+    const ControlGains *gains, double targetRateEdgesPerSec, double rampSeconds,
+    double jitterFraction, int accelTicks, int cruiseTicks) {
+  ControlGains g = *gains;
+  ControlInit(&g);
+  PulseTrainState pt;
+  PulseTrainInit(&pt, kSeed);
+  CoupledPlantState plant;
+  CoupledPlantInit(&plant);
+  double accelRatePerSec2 = targetRateEdgesPerSec / rampSeconds;
+  int32_t posTargetAccum = 0;
+  MachinePresetTrialResult result = {0, 0, 0};
+
+  int ticks = accelTicks + cruiseTicks;
+  for (int i = 0; i < ticks; i++) {
+    double rate = (i < accelTicks) ? (accelRatePerSec2 * i / kTickHz) : targetRateEdgesPerSec;
+    int32_t delta = PulseTrainTickDelta(&pt, rate, kTickHz, jitterFraction);
+    posTargetAccum += delta;
+    int32_t posActual = CoupledPlantMotorPositionCounts(&plant);
+    int32_t velActual = CoupledPlantMotorVelocityCounts(&plant);
+    int32_t torque = ControlTick(posTargetAccum, posActual, velActual, kDt);
+    int32_t err = Abs32(posTargetAccum - posActual);
+    if (i < accelTicks) {
+      if (err > result.maxErrAccel) result.maxErrAccel = err;
+    } else {
+      if (err > result.maxErrCruise) result.maxErrCruise = err;
+    }
+    if (Abs32(torque) >= g.torqueClampMax - 1) result.pegTicks++;
+    CoupledPlantStep(&plant, motor, load, coupling, torque);
+  }
+  return result;
+}
+
+static void test_prototype_nema23_leadscrew_preset_clean_is_stable(void) {
+  MachinePresetTrialResult r = RunMachinePresetTrial(
+      &kNema23LeadscrewMotor, &kNema23LeadscrewLoad, &kNema23LeadscrewCoupling,
+      &kNema23LeadscrewGains, 2500.0, 1.0, 0.0, 1000, 1000);
+  TEST_ASSERT_TRUE(r.maxErrAccel <= 450);
+  TEST_ASSERT_TRUE(r.maxErrCruise <= 300);
+  TEST_ASSERT_TRUE(r.pegTicks <= 20);
+}
+
+static void test_prototype_nema23_leadscrew_preset_jittered_is_stable(void) {
+  MachinePresetTrialResult r = RunMachinePresetTrial(
+      &kNema23LeadscrewMotor, &kNema23LeadscrewLoad, &kNema23LeadscrewCoupling,
+      &kNema23LeadscrewGains, 2500.0, 1.0, 0.3, 1000, 1000);
+  TEST_ASSERT_TRUE(r.maxErrAccel <= 450);
+  TEST_ASSERT_TRUE(r.maxErrCruise <= 300);
+  TEST_ASSERT_TRUE(r.pegTicks <= 20);
+}
+
+static void test_prototype_treadmill_spindle_preset_clean_is_stable(void) {
+  MachinePresetTrialResult r = RunMachinePresetTrial(
+      &kTreadmillSpindleMotor, &kTreadmillSpindleLoad, &kTreadmillSpindleCoupling,
+      &kTreadmillSpindleGains, 2500.0, 1.0, 0.0, 1000, 1000);
+  TEST_ASSERT_TRUE(r.maxErrAccel <= 1500);
+  TEST_ASSERT_TRUE(r.maxErrCruise <= 1500);
+  TEST_ASSERT_TRUE(r.pegTicks <= 20);
+}
+
+static void test_prototype_treadmill_spindle_preset_jittered_is_stable(void) {
+  MachinePresetTrialResult r = RunMachinePresetTrial(
+      &kTreadmillSpindleMotor, &kTreadmillSpindleLoad, &kTreadmillSpindleCoupling,
+      &kTreadmillSpindleGains, 2500.0, 1.0, 0.3, 1000, 1000);
+  TEST_ASSERT_TRUE(r.maxErrAccel <= 1500);
+  TEST_ASSERT_TRUE(r.maxErrCruise <= 1500);
+  TEST_ASSERT_TRUE(r.pegTicks <= 20);
+}
+
 /* ---- velocityFilterShift -- does smoothing the measured velocity cut
  * down the reverse-torque chatter from pulse-train quantization? Measured
  * (seed 12345, 2500 edges/sec, last-quarter-of-run window): shift=0
@@ -615,6 +711,10 @@ int main(void) {
   RUN_TEST(test_prototype_realistic_plant_smoothed_feedforward_beats_reactive_only_on_moderate_ramp);
   RUN_TEST(test_prototype_realistic_plant_smoothed_feedforward_beats_reactive_only_on_fast_ramp);
   RUN_TEST(test_prototype_realistic_plant_smoothed_feedforward_beats_raw_feedforward_chatter);
+  RUN_TEST(test_prototype_nema23_leadscrew_preset_clean_is_stable);
+  RUN_TEST(test_prototype_nema23_leadscrew_preset_jittered_is_stable);
+  RUN_TEST(test_prototype_treadmill_spindle_preset_clean_is_stable);
+  RUN_TEST(test_prototype_treadmill_spindle_preset_jittered_is_stable);
   RUN_TEST(test_filter_shift_one_stays_bounded_under_jitter);
   return UNITY_END();
 }

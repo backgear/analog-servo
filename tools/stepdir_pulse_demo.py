@@ -23,9 +23,10 @@ after a Control.c change -- run it with no arguments:
 
 writes assets/stepdir-pulse-demo.png, assets/stepdir-ramp-demo.png,
 assets/stepdir-filter-shift-demo.png, assets/stepdir-feedforward-demo.png,
-and assets/stepdir-feedforward-realistic-plant-demo.png in place. Pass
---out-dir to write elsewhere instead (e.g. for a one-off comparison without
-touching the checked-in images).
+assets/stepdir-feedforward-realistic-plant-demo.png, and
+assets/stepdir-machine-presets-demo.png in place. Pass --out-dir to write
+elsewhere instead (e.g. for a one-off comparison without touching the
+checked-in images).
 """
 import argparse
 import json
@@ -188,6 +189,29 @@ def build_feedforward_realistic_plant_demo(binary, out, build_dir):
            build_dir)
 
 
+def build_machine_presets_demo(binary, out, build_dir):
+    """Two named, recognizable mechanisms side by side (MachinePresets.h):
+    a NEMA 23 lead-screw mill X-axis (Lovejoy coupling, cogging, load-side
+    stiction) and a treadmill motor spindle (belt coupling, very large
+    inertia, no cogging) -- same ramped/jittered pulse train, each with
+    its own hand-tuned gains. Representative ratios, not measurements of
+    any specific real machine."""
+    rate, ramp_seconds, duration, gap = 2500, 1.0, 2.0, 1.0
+    ticks = int(duration * 1000)
+    segments = []
+    windows = []
+    t = 0.0
+    for label, plant in (("NEMA 23 lead-screw (Lovejoy, cogging)", "nema23-leadscrew"),
+                         ("Treadmill motor spindle (belt, no cogging)", "treadmill-spindle")):
+        segments += run_segment(binary, rate, ticks, t, jitter=0.3, ramp_seconds=ramp_seconds,
+                                 plant=plant)
+        windows.append((label, t, t + duration))
+        t += duration + gap
+    render(segments, windows, out,
+           "analog-servo Mode A (step/dir): named machine presets -- SIMULATED, representative",
+           build_dir)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -206,6 +230,7 @@ def main():
         build_feedforward_demo(binary, out_dir / "stepdir-feedforward-demo.png", build_dir)
         build_feedforward_realistic_plant_demo(
             binary, out_dir / "stepdir-feedforward-realistic-plant-demo.png", build_dir)
+        build_machine_presets_demo(binary, out_dir / "stepdir-machine-presets-demo.png", build_dir)
 
 
 if __name__ == "__main__":

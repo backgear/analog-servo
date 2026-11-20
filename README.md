@@ -23,17 +23,32 @@ be well-supported by existing manufacturers.
 
 ![Simulated, PROTOTYPE, same comparison but against a plant with real inertia + amplifier bandwidth lag + friction (gains hand-tuned for it) -- actual velocity visibly tracks the ramp in real time with feedforward instead of lagging it, at nearly no extra torque chatter](assets/stepdir-feedforward-realistic-plant-demo.png)
 
-These five are all generated, not captured -- see `tools/stepdir_pulse_demo.py`
-(regenerate all five in place after a `Control.c` change with
-`python3 tools/stepdir_pulse_demo.py`, no arguments needed). The last two are
-a prototype, not what Mode A actually does today: they explore feeding
-`Control.c`'s existing feedforward path (already used by Mode B/C) from Mode
-A too. The zero-lag-plant version shows a real tradeoff (less lag, more
-chatter); adding realistic plant dynamics and re-tuning the gains for them
-removes most of that tradeoff -- smoothed feedforward ends up clearly better
-on both lag and chatter. See `firmware/test/test_stepdir_control.c`'s two
-PROTOTYPE sections for the numbers and the gain-retuning caveat (a gain set
-tuned for one plant is not expected to stay stable against a different one).
+![Simulated, representative -- not measurements of any specific real machine: two named mechanisms (NEMA 23 lead-screw mill X-axis with a Lovejoy coupling and cogging; treadmill motor spindle with a belt coupling and no cogging) tracking the same ramped/jittered pulse train, each with its own hand-tuned gains](assets/stepdir-machine-presets-demo.png)
+
+These six are all generated, not captured -- see `tools/stepdir_pulse_demo.py`
+(regenerate all six in place after a `Control.c` change with
+`python3 tools/stepdir_pulse_demo.py`, no arguments needed). The feedforward
+pair is a prototype, not what Mode A actually does today: they explore
+feeding `Control.c`'s existing feedforward path (already used by Mode B/C)
+from Mode A too. The zero-lag-plant version shows a real tradeoff (less lag,
+more chatter); adding realistic plant dynamics and re-tuning the gains for
+them removes most of that tradeoff -- smoothed feedforward ends up clearly
+better on both lag and chatter. See
+`firmware/test/test_stepdir_control/test_stepdir_control.c`'s PROTOTYPE
+sections for the numbers and the gain-retuning caveat (a gain set tuned for
+one plant is not expected to stay stable against a different one).
+
+The two named-machine presets (`firmware/test/support/MachinePresets.h`)
+are representative ratios, not measurements of any specific NEMA 23 or
+treadmill motor -- see that file's header comment for the reasoning behind
+each parameter. Worth calling out honestly rather than cropping out of the
+image: the treadmill preset's torque trace shows a repeating sawtooth/
+chatter pattern once it reaches cruise speed -- a genuine stick-slip limit
+cycle from combining load-side stiction with a compliant belt coupling, not
+a rendering artifact. It still stays within this sim's bounded-error/no-
+clamp-pegging bar (see the PROTOTYPE tests), but it's a reminder that
+"stable by that bar" and "smooth" aren't the same thing -- exactly the kind
+of distinction a real bench rig would be needed to confirm either way.
 
 **Q: Is this going to produce better results than a Teknic Clearpath?**
 A: No, almost certainly not.

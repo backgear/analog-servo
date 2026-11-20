@@ -32,13 +32,16 @@
  * unsmoothed), or "smoothed" (one-pole-smoothed at --ff-shift, default 3
  * -- the calibrated sweet spot in test_stepdir_control.c).
  *
- * --plant selects the toy plant (see test_stepdir_control.c's
- * "PROTOTYPE, realistic plant" section for the full story): "idealized"
- * (default -- the zero-lag `velocity += torque/16` plant used throughout
- * this suite, with the gains that section also uses) or "realistic"
- * (ToyPlant.h's inertia/amp-lag/friction model, with the gains hand-
- * tuned specifically for it -- NOT the idealized plant's gains, which go
- * unstable against this plant).
+ * --plant selects the toy plant: "idealized" (default -- the zero-lag
+ * `velocity += torque/16` plant used throughout this suite) or
+ * "realistic" (ToyPlant.h's inertia/amp-lag/friction model -- see
+ * test_stepdir_control.c's "PROTOTYPE, realistic plant" section), or one
+ * of MachinePresets.h's two named mechanisms, "nema23-leadscrew" or
+ * "treadmill-spindle" (see test_stepdir_control.c's "PROTOTYPE, named
+ * machine presets" section). Each non-idealized choice uses gains hand-
+ * tuned specifically for it -- NOT interchangeable with each other or
+ * with the idealized plant's gains, which go unstable against any of
+ * them.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,6 +49,7 @@
 #include "Control.h"
 #include "PulseTrain.h"
 #include "ToyPlant.h"
+#include "MachinePresets.h"
 
 static double NextDoubleArg(int argc, char **argv, int *i) {
   if (*i + 1 >= argc) { fprintf(stderr, "%s: missing value\n", argv[*i]); exit(1); }
@@ -53,7 +57,7 @@ static double NextDoubleArg(int argc, char **argv, int *i) {
 }
 
 typedef enum { FF_NONE, FF_RAW, FF_SMOOTHED } FeedforwardMode;
-typedef enum { PLANT_IDEALIZED, PLANT_REALISTIC } PlantChoice;
+typedef enum { PLANT_IDEALIZED, PLANT_REALISTIC, PLANT_NEMA23_LEADSCREW, PLANT_TREADMILL_SPINDLE } PlantChoice;
 
 /* See test_stepdir_control.c's "PROTOTYPE, realistic plant" section --
  * hand-tuned via a step-response grid search specifically for
@@ -91,7 +95,10 @@ int main(int argc, char **argv) {
       if (++i >= argc) { fprintf(stderr, "--plant: missing value\n"); return 1; }
       if (!strcmp(argv[i], "idealized")) plantChoice = PLANT_IDEALIZED;
       else if (!strcmp(argv[i], "realistic")) plantChoice = PLANT_REALISTIC;
-      else { fprintf(stderr, "--plant: must be idealized|realistic\n"); return 1; }
+      else if (!strcmp(argv[i], "nema23-leadscrew")) plantChoice = PLANT_NEMA23_LEADSCREW;
+      else if (!strcmp(argv[i], "treadmill-spindle")) plantChoice = PLANT_TREADMILL_SPINDLE;
+      else { fprintf(stderr, "--plant: must be idealized|realistic|nema23-leadscrew|"
+                             "treadmill-spindle\n"); return 1; }
     }
     else { fprintf(stderr, "unknown argument: %s\n", argv[i]); return 1; }
   }
@@ -99,7 +106,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "usage: %s --rate N --ticks N [--jitter F] [--t0 S] "
                     "[--ramp-seconds S] [--filter-shift N] "
                     "[--feedforward none|raw|smoothed] [--ff-shift N] "
-                    "[--plant idealized|realistic]\n", argv[0]);
+                    "[--plant idealized|realistic|nema23-leadscrew|treadmill-spindle]\n", argv[0]);
     return 1;
   }
   int rampTicks = (int)(rampSeconds * 1000.0);
@@ -116,12 +123,18 @@ int main(int argc, char **argv) {
     .torqueClampMax = 1000,
     .velocityFilterShift = filterShift,
   };
-  ControlInit(plantChoice == PLANT_REALISTIC ? &kRealisticPlantGains : &idealizedGains);
+  const ControlGains *gains = &idealizedGains;
+  if (plantChoice == PLANT_REALISTIC) gains = &kRealisticPlantGains;
+  else if (plantChoice == PLANT_NEMA23_LEADSCREW) gains = &kNema23LeadscrewGains;
+  else if (plantChoice == PLANT_TREADMILL_SPINDLE) gains = &kTreadmillSpindleGains;
+  ControlInit(gains);
 
   PulseTrainState pt;
   PulseTrainInit(&pt, 12345u);   /* same fixed seed as the native test -- deterministic demo */
   ToyPlantState plant;
   ToyPlantInit(&plant);
+  CoupledPlantState coupledPlant;
+  CoupledPlantInit(&coupledPlant);
 
   int32_t posTargetAccum = 0, pos = 0, vel = 0;
   int64_t filteredDeltaQ8 = 0;
@@ -131,8 +144,22 @@ int main(int argc, char **argv) {
     double rate = (i < rampTicks) ? (accelRatePerSec2 * i / 1000.0) : rateEdgesPerSec;
     int32_t delta = PulseTrainTickDelta(&pt, rate, 1000.0, jitterFraction);
     posTargetAccum += delta;
-    int32_t posActual = plantChoice == PLANT_REALISTIC ? ToyPlantPositionCounts(&plant) : pos;
-    int32_t velActual = plantChoice == PLANT_REALISTIC ? ToyPlantVelocityCounts(&plant) : vel;
+    int32_t posActual, velActual;
+    switch (plantChoice) {
+      case PLANT_REALISTIC:
+        posActual = ToyPlantPositionCounts(&plant);
+        velActual = ToyPlantVelocityCounts(&plant);
+        break;
+      case PLANT_NEMA23_LEADSCREW:
+      case PLANT_TREADMILL_SPINDLE:
+        posActual = CoupledPlantMotorPositionCounts(&coupledPlant);
+        velActual = CoupledPlantMotorVelocityCounts(&coupledPlant);
+        break;
+      default:
+        posActual = pos;
+        velActual = vel;
+        break;
+    }
 
     int32_t torque;
     if (ffMode == FF_NONE) {
@@ -152,11 +179,22 @@ int main(int argc, char **argv) {
            i == 0 ? "" : ",", t0Seconds + i / 1000.0, posActual, posTargetAccum,
            velActual, delta, torque);
 
-    if (plantChoice == PLANT_REALISTIC) {
-      ToyPlantStep(&plant, &kRealisticPlant, torque);
-    } else {
-      vel += torque / 16;
-      pos += vel;
+    switch (plantChoice) {
+      case PLANT_REALISTIC:
+        ToyPlantStep(&plant, &kRealisticPlant, torque);
+        break;
+      case PLANT_NEMA23_LEADSCREW:
+        CoupledPlantStep(&coupledPlant, &kNema23LeadscrewMotor, &kNema23LeadscrewLoad,
+                          &kNema23LeadscrewCoupling, torque);
+        break;
+      case PLANT_TREADMILL_SPINDLE:
+        CoupledPlantStep(&coupledPlant, &kTreadmillSpindleMotor, &kTreadmillSpindleLoad,
+                          &kTreadmillSpindleCoupling, torque);
+        break;
+      default:
+        vel += torque / 16;
+        pos += vel;
+        break;
     }
   }
   printf("]\n");
