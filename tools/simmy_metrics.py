@@ -44,7 +44,7 @@ def hold_metrics(frames, band_counts=5, velocity_band=1, dwell_seconds=0.25):
     return holds
 
 
-def measure(frames, torque_limit=1000):
+def tracking_metrics(frames, torque_limit=1000):
     if not frames:
         raise ValueError('cannot score an empty run')
     result = {}
@@ -54,9 +54,29 @@ def measure(frames, torque_limit=1000):
         result[label + '_peak'] = max(map(abs, errors))
     torque = [f['torque'] for f in frames]
     result.update(torque_rms=rms(torque),
-                  torque_delta_rms=rms(b - a for a, b in zip(torque, torque[1:])),
+                  torque_delta_rms=rms(b['torque'] - a['torque']
+                                       for a, b in zip(frames, frames[1:])
+                                       if b['t'] - a['t'] <= 0.001001),
                   saturation_ticks=sum(abs(t) >= torque_limit for t in torque))
+    return result
+
+
+def measure(frames, torque_limit=1000):
+    result = tracking_metrics(frames, torque_limit)
     result['holds'] = hold_metrics(frames)
+    moving = [f for f in frames if 'hold' not in f.get('phase', '')]
+    result['moving'] = tracking_metrics(moving, torque_limit) if moving else None
+    result['phases'] = []
+    start = 0
+    while start < len(frames):
+        phase = frames[start].get('phase', '')
+        end = start + 1
+        while end < len(frames) and frames[end].get('phase', '') == phase:
+            end += 1
+        result['phases'].append(dict(phase=phase, start=frames[start]['t'],
+                                     end=frames[end - 1]['t'] + 0.001,
+                                     **tracking_metrics(frames[start:end], torque_limit)))
+        start = end
     return result
 
 

@@ -3,7 +3,7 @@ import unittest
 
 import matplotlib.pyplot as plt
 
-from plot_telemetry import following_error_panel, panel, BLUE
+from plot_telemetry import following_error_panel, panel, share_limits, BLUE
 
 
 class FollowingErrorTests(unittest.TestCase):
@@ -21,6 +21,17 @@ class FollowingErrorTests(unittest.TestCase):
             self.assertEqual(error_ax.get_ylabel(), 'following error (ct)')
             self.assertEqual(len(error_ax.get_legend().get_texts()), 3)
             self.assertIsNone(ax.get_legend())
+        finally:
+            plt.close(fig)
+
+    def test_comparison_scales_include_both_ranges(self):
+        fig, axes = plt.subplots(1, 2)
+        try:
+            axes[0].set_ylim(-10, 20)
+            axes[1].set_ylim(-100, 200)
+            share_limits(axes)
+            self.assertEqual(axes[0].get_ylim(), (-100, 200))
+            self.assertEqual(axes[1].get_ylim(), (-100, 200))
         finally:
             plt.close(fig)
 

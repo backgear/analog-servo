@@ -17,8 +17,20 @@ def plot_simmy(source, target, env):
                     str(root / 'tools/simmy_plot.py')], check=True)
 
 
+def report_simmy(source, target, env):
+    root = Path(env.subst('$PROJECT_DIR')).parent
+    subprocess.run([os.environ.get('SIMMY_PYTHON', 'python3'),
+                    str(root / 'tools/simmy_report.py')], check=True)
+
+
 env.AddCustomTarget(  # noqa: F821
     name='simmy', dependencies=None, actions=plot_simmy,
     title='Plot simmy simulation',
     description='Build Control.c + external simmy on host and render simulated telemetry',
+)
+
+env.AddCustomTarget(  # noqa: F821
+    name='simmy-report', dependencies=None, actions=report_simmy,
+    title='Compare simmy tunes and feedforward',
+    description='Run nine synthetic cases and generate plots plus a scored Markdown report',
 )

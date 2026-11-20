@@ -5,6 +5,7 @@ All output is SIMULATED, not bench-validated. Run --help for parameters.
 No Python/C bindings needed: one native subprocess emits a JSON frame list.
 """
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -51,6 +52,43 @@ def run_driver(binary, config, gains, ticks=2000, rate=2500, ramp_seconds=1, jit
            *map(str, gains), scenario, feedforward, str(ff_shift), str(accel_ff_q8)]
     result = subprocess.run(cmd, check=True, capture_output=True, text=True)
     return json.loads(result.stdout)
+
+
+def revision(repo):
+    result = subprocess.run(['git', '-C', str(repo), 'describe', '--always', '--dirty'],
+                            capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else 'unknown'
+
+
+def save_run(out, frames, config, simmy, parameters):
+    """Shared recorder for single runs and batch reports, with exact input hashes."""
+    from simmy_metrics import measure
+    out.mkdir(parents=True, exist_ok=True)
+    (out / 'frames.json').write_text(json.dumps(frames) + '\n')
+    metrics = measure(frames)
+    (out / 'metrics.json').write_text(json.dumps(metrics, indent=2) + '\n')
+    metadata = {k: str(v) if isinstance(v, Path) else v for k, v in parameters.items()}
+    hashes = {}
+    inputs = [(ROOT, p) for p in (ROOT / 'firmware/test/support/simmy_plot_main.c',
+                                  ROOT / 'firmware/src/Control.c',
+                                  ROOT / 'firmware/include/Control.h',
+                                  ROOT / 'firmware/include/Output.h',
+                                  ROOT / 'tools/simmy_plot.py', ROOT / 'tools/simmy_metrics.py',
+                                  ROOT / 'tools/plot_telemetry.py')]
+    inputs += [(simmy, p) for folder in ('src', 'include') for p in (simmy / folder).glob('*')
+               if p.suffix in ('.c', '.h')]
+    for repo, path in inputs:
+        label = ('firmware' if repo == ROOT else 'simmy') + ':' + str(path.relative_to(repo))
+        hashes[label] = hashlib.sha256(path.read_bytes()).hexdigest()
+    metadata.update(simulated=True, firmware_revision=revision(ROOT),
+                    simmy_revision=revision(simmy), simmy_dir=str(simmy), config=str(config),
+                    plant=json.loads(config.read_text()), tick_hz=1000, source_sha256=hashes,
+                    torque_clamp=[-1000, 1000], pulse_seed=12345, analog_noise_seed=1,
+                    host_cc=os.environ.get('CC', 'cc'),
+                    effective_accel_ff_q8=(parameters.get('accel_ff_q8', 18432)
+                                           if parameters.get('feedforward') == 'velocity-acceleration' else 0))
+    (out / 'run.json').write_text(json.dumps(metadata, indent=2) + '\n')
+    return metrics
 
 
 def main():
@@ -115,23 +153,7 @@ def main():
                             args.ticks, args.rate, args.ramp_seconds, args.jitter, args.scenario,
                             args.feedforward, args.ff_shift, args.accel_ff_q8)
     frames_path = out / 'frames.json'
-    frames_path.write_text(json.dumps(frames) + '\n')
-    from simmy_metrics import measure
-    (out / 'metrics.json').write_text(json.dumps(measure(frames), indent=2) + '\n')
-    # Preserve inputs separately: the frame list stays compatible with the
-    # existing telemetry renderer, and runs remain attributable to revisions.
-    def revision(repo):
-        result = subprocess.run(['git', '-C', str(repo), 'describe', '--always', '--dirty'],
-                                capture_output=True, text=True)
-        return result.stdout.strip() if result.returncode == 0 else 'unknown'
-    metadata = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}
-    metadata.update(simulated=True, firmware_revision=revision(ROOT),
-                    simmy_revision=revision(simmy), simmy_dir=str(simmy),
-                    plant=json.loads(config.read_text()), tick_hz=1000,
-                    torque_clamp=[-1000, 1000],
-                    effective_accel_ff_q8=(args.accel_ff_q8
-                                           if args.feedforward == 'velocity-acceleration' else 0))
-    (out / 'run.json').write_text(json.dumps(metadata, indent=2) + '\n')
+    save_run(out, frames, config, simmy, vars(args))
     print(f'Saved {frames_path}', flush=True)
     if not args.no_plot:
         subprocess.run([sys.executable, str(ROOT / 'tools/plot_telemetry.py'),

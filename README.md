@@ -29,6 +29,10 @@ For plots using an external **simmy** checkout and the current `Control.c`, run
 `python3 tools/simmy_plot.py --simmy-dir ~/simmy` or
 `pio run -d firmware -e native -t simmy`. See [SIMULATION.md](SIMULATION.md)
 for setup, parameters, PlatformIO dependency options, and simulation limits.
+`python3 tools/simmy_report.py` (or `pio run -d firmware -e native -t simmy-report`)
+compares baseline, tracking-focused and balanced tunes over a full stop/hold/reverse
+sequence, with separate experimental velocity/acceleration feedforward cases.
+It writes `.cache/simmy-report/report.md`, scored data and comparison plots.
 These outputs are synthetic, not bench-validated.
 
 These six are all generated, not captured -- see `tools/stepdir_pulse_demo.py`

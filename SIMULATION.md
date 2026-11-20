@@ -57,6 +57,59 @@ See simmy's README/header for the JSON schema and its modeling limitations.
 Different models require different gains; no stability claim is made for
 arbitrary combinations.
 
+## One-command nine-case report
+
+```sh
+python3 tools/simmy_report.py
+# Equivalent PlatformIO custom target:
+pio run -d firmware -e native -t simmy-report
+# Data + Markdown only (does not require matplotlib):
+python3 tools/simmy_report.py --no-plots --out-dir .cache/simmy-data-report
+```
+
+Default output: **`.cache/simmy-report/report.md`**. It compares baseline,
+tracking-focused (`optimized`), and balanced tunes, each with no feedforward,
+velocity feedforward, and velocity+acceleration feedforward: nine independent
+runs of the full 10-second sequence. The driver is compiled once per batch.
+`--scenario ramp-cruise` runs the original two-second experiment instead;
+`--rate`, `--ramp-seconds`, `--jitter`, `--ff-shift` and `--accel-ff-q8` control
+shared inputs. All nine cases see identical target positions and pulse jitter.
+
+Artifacts include:
+
+- `tunes-none.png`, `tunes-velocity.png`, `tunes-velocity-acceleration.png`:
+  one column per tune, common primary and error-axis limits across columns.
+- `balanced-feedforward.png`: one column per feedforward option, balanced gains.
+- Matching comparison JSON files for re-rendering.
+- `scores.json`: full-run, motion-only, per-phase and hold metrics for every case.
+- `manifest.json`: batch arguments, revisions and report-source hash.
+- `<tune>-<feedforward>/frames.json`, `metrics.json`, `run.json`: individual
+  experiment data with resolved gains, fixed seeds, plant content and SHA-256
+  hashes of C/header inputs and plotting/metric sources. Dirty external simmy
+  sources are not modified; hashes detect their differences but are not source
+  snapshots, so archive or commit those inputs to reproduce a published run.
+
+Do not choose gains only from whole-run RMS: the holds can expose oscillation
+that moving-only error obscures. On the default sequence, gains-only results
+are:
+
+| Metric | Baseline | Tracking | Balanced |
+| --- | ---: | ---: | ---: |
+| Motion-only motor RMS | 85.6 | 7.0 | 10.1 |
+| Motion-only load RMS | 96.5 | 17.3 | 19.2 |
+| Whole-run torque RMS | 55.5 | 144.3 | 61.3 |
+| Whole-run torque-increment RMS | 2.3 | 66.2 | 15.0 |
+
+None of these three establishes both motor and load settling in either hold.
+The tracking-focused preset is particularly active at standstill. The report
+records this rather than declaring an overall winner. Fixing it requires a
+separate stop/low-speed control experiment, not concealing it with plot filters.
+
+Tests: `python3 -m unittest discover -s tools -p 'test_simmy*.py'` and
+`python3 -m unittest discover -s tools -p test_plot_telemetry.py`.
+External-checkout integration tests skip explicitly if simmy is unavailable;
+metric and renderer tests still run independently (renderer needs matplotlib).
+
 ## C → Python boundary
 
 ```text

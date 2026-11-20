@@ -23,6 +23,14 @@ class MetricsTests(unittest.TestCase):
         self.assertIsNone(hold_metrics(frames)[0]['load_settling_seconds'])
         self.assertIsNone(hold_metrics([frame(i, 90) for i in range(1000)])[0]['motor_settling_seconds'])
 
+    def test_excluded_holds_do_not_create_spurious_torque_increments(self):
+        frames = [frame(0), frame(1), frame(1000), frame(1001)]
+        for f in frames:
+            f['phase'] = 'cruise'
+        frames[2]['torque'] = frames[3]['torque'] = 100
+        metrics = measure(frames)
+        self.assertEqual(metrics['moving']['torque_delta_rms'], 0)
+
     def test_saturation_and_signed_error_metrics(self):
         frames = [frame(0, 97), frame(1, 104)]
         frames[0]['torque'] = 1000

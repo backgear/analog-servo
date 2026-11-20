@@ -80,6 +80,30 @@ def following_error_panel(ax, data, t0, position_key="position"):
     return error_ax
 
 
+def share_limits(axes):
+    """Use identical scales across comparison columns, including error axes."""
+    lower = min(ax.get_ylim()[0] for ax in axes)
+    upper = max(ax.get_ylim()[1] for ax in axes)
+    for ax in axes:
+        ax.set_ylim(lower, upper)
+
+
+def mark_phases(axes, data, t0):
+    start = 0
+    while start < len(data):
+        phase = data[start].get('phase', '')
+        end = start + 1
+        while end < len(data) and data[end].get('phase', '') == phase:
+            end += 1
+        a, b = data[start]['t'] - t0, data[end - 1]['t'] - t0 + 0.001
+        for ax in axes:
+            if start:
+                ax.axvline(a, color=BASELINE, linewidth=0.5, alpha=0.5)
+            if 'hold' in phase:
+                ax.axvspan(a, b, color=BASELINE, alpha=0.12, zorder=0)
+        start = end
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -88,6 +112,8 @@ def main():
                      metavar="LABEL:START:END",
                      help="one column per window, times in seconds relative to the "
                           "capture's first frame; repeatable. Default: whole capture, one column.")
+    ap.add_argument("--shared-scales", action="store_true",
+                    help="identical y limits across columns (including error axes)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--title", default="analog-servo-f103 bench telemetry")
     args = ap.parse_args()
@@ -117,6 +143,7 @@ def main():
     fig, axes = plt.subplots(rows, n, figsize=(6.5 * n, 9.5 if show_load else 7.5),
                              sharex="col", squeeze=False)
 
+    error_groups = [[], []] if show_load else [[]]
     any_fault = False
     for col, (label, start, end) in enumerate(windows):
         data = [f for f in frames if start <= f["t"] <= end]
@@ -127,11 +154,11 @@ def main():
         pos_baseline = data[0]["position"]
         panel(axes[0, col], data, wt0, "cmd_position", "position", BLUE, "commanded", "actual",
               "position (ct, rel. to window start)", baseline=pos_baseline)
-        following_error_panel(axes[0, col], data, wt0)
+        error_groups[0].append(following_error_panel(axes[0, col], data, wt0))
         if show_load:
             panel(axes[1, col], data, wt0, "cmd_position", "load_position", GREEN,
                   "commanded", "load", "load position (ct, same origin)", baseline=pos_baseline)
-            following_error_panel(axes[1, col], data, wt0, "load_position")
+            error_groups[1].append(following_error_panel(axes[1, col], data, wt0, "load_position"))
         velocity_ax = axes[velocity_row, col]
         panel(velocity_ax, data, wt0, "cmd_velocity", "velocity", ORANGE,
               "cascade target", "feedback", "velocity (ct/tick)")
@@ -141,9 +168,16 @@ def main():
             velocity_ax.legend(frameon=False, fontsize=8, loc="upper right", labelcolor=INK_SECONDARY)
         panel(axes[torque_row, col], data, wt0, None, "torque", INK_PRIMARY,
               None, "torque.command", "torque")
+        mark_phases(axes[:, col], data, wt0)
         if label:
             axes[0, col].set_title(label)
         axes[torque_row, col].set_xlabel("time (s)")
+
+    if args.shared_scales:
+        for row in axes:
+            share_limits(row)
+        for group in error_groups:
+            share_limits(group)
 
     fig.suptitle(args.title, color=INK_PRIMARY, fontsize=12, fontweight="bold", y=0.995)
     fig.tight_layout(rect=[0, 0, 1, 0.97])
