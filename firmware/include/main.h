@@ -157,13 +157,16 @@ int32_t  AppAutotuneGetRelayProgressPeakVelocity(void);
 
 /* Online RLS velocity-loop self-tuning (RLS.c) -- the second autotune
  * method, running as a passive observer alongside the normal cascade
- * rather than relay's cascade-bypassing exclusive mode (see RLS.h). Not
- * yet reachable from Protocol.c (no command surface wired up yet) and
- * AppRlsApply() is currently a no-op stub -- both land in a later phase of
- * this same feature; AppControlTick() already feeds it real ticks whenever
- * the normal cascade runs, so once started it's already learning. glideMs
- * is real milliseconds; AppRlsStart() converts it to ticks using the live
- * control tick rate itself, not a literal tick count. */
+ * rather than relay's cascade-bypassing exclusive mode (see RLS.h).
+ * Reachable via Protocol.c's `autotune start rls`/`stop`/`apply`, same
+ * surface as relay. glideMs is real milliseconds, stashed verbatim by
+ * AppRlsStart(); AppRlsApply() converts it to ticks using the live control
+ * tick rate at apply time and commits the last AUTOTUNE_RESULT_OK
+ * candidate's Kp/Ki into the live velocity gains via a GainGlide.c ramp
+ * (position.kp untouched -- RLS only ever estimates the velocity loop),
+ * rather than AppAutotuneApply()'s instant jump: a candidate can arrive
+ * mid-move here, so an instant jump would step torque gains audibly/
+ * mechanically while already tracking. */
 void    AppRlsStart(int32_t lambdaQ8, uint32_t glideMs);
 void    AppRlsStop(void);
 int     AppRlsBusy(void);

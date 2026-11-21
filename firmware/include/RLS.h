@@ -12,13 +12,16 @@
  * alongside the relay-feedback bootstrap in Autotune.c/Autotune.h.
  *
  * Where relay is a dedicated, exclusive bootstrap test (bypasses the normal
- * cascade, self-terminates in one bounded run), RLS is a passive observer:
- * RlsTick() is called every normal-cascade control tick with whatever torque
- * command and measured velocity the cascade already produced, and never
- * feeds back into that tick's torque output. It can run across many moves,
- * with pauses between them, updating its estimate the whole time -- "start
- * from nothing," converging over however many moves it takes, rather than
- * relay's single bounded experiment.
+ * cascade, self-terminates in one bounded run), RLS is a near-passive
+ * observer: RlsTick() is called every normal-cascade control tick with
+ * whatever torque command and measured velocity the cascade already
+ * produced. The ONE exception is RlsGetDitherTorque() (see "Torque dither"
+ * below) -- a small, self-limiting perturbation added on top of that torque
+ * command while still converging, not a cascade-bypassing takeover like
+ * relay's. It can run across many moves, with pauses between them, updating
+ * its estimate the whole time -- "start from nothing," converging over
+ * however many moves it takes, rather than relay's single bounded
+ * experiment.
  *
  * Model: a first-order per-tick velocity plant, v[n+1] = a*v[n] + b*u[n].
  * `a` is the plant's own per-tick velocity decay/persistence (friction's
@@ -30,10 +33,14 @@
  * condition... easy to get wrong in a way that never terminates cleanly"):
  * RLS has no termination proof either. Instead of a proof, a physical clamp
  * on `a` (a passive mechanical system can't gain energy on its own, so
- * a <= 1.0 at ANY tick rate -- a hard, tick-rate-invariant bound) plus a
- * generous bench-agnostic clamp on `b` stand in as the safety net: a
- * candidate that clamps for a sustained window is rejected
- * (AUTOTUNE_RESULT_BAD_MEASUREMENT), never silently handed to the cascade.
+ * a <= 1.0 at ANY tick rate -- a hard, tick-rate-invariant bound), a
+ * generous bench-agnostic clamp on `b`, AND an exact cascade-stability check
+ * (RLS.c's CascadeStable(), which is why this file depends on Control.h --
+ * a candidate's velocity-loop pole can be perfectly valid on its own and
+ * still destabilize Control.c's existing, RLS-untouched position(P) loop
+ * nested around it) stand in as the safety net: a candidate that clamps, or
+ * fails that stability check, is rejected (AUTOTUNE_RESULT_BAD_MEASUREMENT),
+ * never silently handed to the cascade.
  *
  * Tick-rate handling: `a`'s clamp is a physical constant (a<=1.0),
  * independent of tick rate. `b` and velocity are natively counts/tick in
@@ -47,7 +54,43 @@
  * tickHz conversion at all -- see MapThetaToGains() in RLS.c. lambdaQ8 is
  * taken as given: RLS.c does not rescale it for tickHz, so whatever picks
  * lambdaQ8 (today, a constant in main.c) is responsible for choosing a
- * value appropriate to the live tick rate if that ever varies. */
+ * value appropriate to the live tick rate if that ever varies.
+ *
+ * Torque dither: RlsTick() observes whatever torqueCommand Control.c's
+ * cascade already computed from POSITION ERROR -- which makes torque and
+ * velocity correlated through the control law itself, not independently
+ * exciting. Ordinary least squares (RLS included) is well known to come out
+ * BIASED on closed-loop data like that: found by this feature wrongly
+ * accepting a lightly-damped plant's candidate as OK with `a` off by a
+ * wide margin (0.934 estimated vs. the plant's true 0.999) and a corresponding
+ * `b` three orders of magnitude too large -- a bias invisible to every
+ * clamp above, since the biased estimate still looked perfectly plausible.
+ * RlsGetDitherTorque() breaks that correlation with a small, zero-mean,
+ * pseudo-random perturbation (RLS.c's DitherMix()) added to the torque
+ * command on top of whatever the cascade computed -- it must reach the
+ * REAL output (not just RLS's own math) to have any decorrelating effect,
+ * so main.c adds it to torqueCommand before both OutputSetTorqueCommand()
+ * and RlsTick() see it.
+ *
+ * Measured, not assumed: as little as 1% of torqueClampMax fully corrects
+ * the bias in every case tried, and the result stays flat (same corrected
+ * estimate, same tracking quality) all the way through 50% -- there is no
+ * delicate threshold to tune. RLS.c's actual amplitude (~5%) picks
+ * comfortable margin above that observed minimum, not a tightly-fit value.
+ * Measured impact of leaving dither on indefinitely against an ALREADY-
+ * converged, already-applied good tune (simmy's rls_integration harness,
+ * identical move, same gains, 5% dither forced on vs. off): tracking itself
+ * is within noise -- maxErrCruise 27 vs. 30 counts, RMS error 20.41 vs.
+ * 20.22, pegTicks 0 either way -- so the documented argument that it would
+ * be SAFE to leave on continuously (no settle-time/tracking regression) is
+ * measured, not assumed. It is NOT free, though: RMS torque came out ~33%
+ * higher with dither forced on (43 vs. 58 raw units) -- real extra
+ * actuator effort/heat (and likely audible buzz) a user could notice, even
+ * though tracking quality itself doesn't suffer. That cost, not merely
+ * saving cycles, is the real reason RlsGetDitherTorque() turns itself off
+ * once RlsGetResult()==AUTOTUNE_RESULT_OK, independent of whether
+ * RlsIsActive() stays true -- and resumes on its own if a later tick's
+ * estimate degrades back to BAD_MEASUREMENT. */
 
 void RlsInit(void);
 
@@ -62,9 +105,17 @@ int  RlsIsActive(void);
 /* Called once per normal-cascade control tick, regardless of RlsIsActive()
  * (cheap early-return when not running, so the feature costs ~nothing when
  * unused) -- torqueCommand/velocityActual are this tick's already-polarity-
- * corrected cascade output and measured velocity, the same values the
- * cascade itself just used; RLS never feeds back into them. */
+ * corrected cascade output (ALREADY including RlsGetDitherTorque(), if the
+ * caller added it as instructed below) and measured velocity. */
 void RlsTick(int32_t torqueCommand, int32_t velocityActual);
+
+/* Call once per control tick while RlsIsActive(), and add the result to
+ * torqueCommand BEFORE both OutputSetTorqueCommand() and this tick's
+ * RlsTick() call -- see "Torque dither" above for why it must reach the
+ * real output, not just RLS's own bookkeeping. Returns exactly 0 whenever
+ * dither isn't needed (not running, or already converged), so a caller that
+ * always adds this in has nothing conditional to get wrong. */
+int32_t RlsGetDitherTorque(void);
 
 AutotuneResult RlsGetResult(void);
 

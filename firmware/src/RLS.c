@@ -10,6 +10,11 @@
  * int64_t, same convention as Control.c's Clamp64/RoundQ16/sVelIntegralQ16.
  */
 #include "RLS.h"
+#include "Control.h"   /* ControlGetGains()->posGainQ8 only -- see CascadeStable() below.
+                           Same portability class as GainGlide.c's existing Control.h
+                           dependency: HAL-free, natively testable, no new link
+                           dependency for [env:native] (Control.c is already linked
+                           there for other test targets). */
 
 #define RLS_SCALE        65536LL   /* Q16.16 */
 #define RLS_Q8_SCALE     256LL
@@ -112,6 +117,35 @@ static AutotuneResult sResult;
 static int32_t sKpResultQ8, sKiResultQ8;
 static uint32_t sTicksObserved;
 static uint32_t sProgressSeq;
+static uint32_t sDitherState;
+
+/* ~5% of torqueClampMax, Q8.8 (13/256=0.0508) -- see RLS.h's "Torque
+ * dither" section. Empirically, as little as 1% already fully corrects the
+ * closed-loop identification bias this exists to fix, and the result is
+ * flat from there through 50%, so this picks comfortable margin above the
+ * observed minimum rather than a tightly-tuned value. */
+#define RLS_DITHER_PCT_Q8 13
+
+/* Murmur3-style 32-bit finalizer (xor-shift / multiply / xor-shift),
+ * chained across calls by folding in a golden-ratio increment each time --
+ * deterministic, non-cryptographic, just needs to scatter a running counter
+ * into something that doesn't read as "a small number plus noise" from one
+ * tick to the next, which is all a decorrelating dither signal needs. */
+static uint32_t DitherMix(uint32_t x) {
+  x ^= x >> 16;
+  x *= 0x85EBCA6Bu;
+  x ^= x >> 13;
+  x *= 0xC2B2AE35u;
+  x ^= x >> 16;
+  return x;
+}
+
+static int32_t DitherSample(int32_t amplitude) {
+  if (amplitude <= 0) return 0;
+  sDitherState = DitherMix(sDitherState + 0x9E3779B9u);
+  uint32_t span = (uint32_t)(2 * amplitude + 1);
+  return (int32_t)(sDitherState % span) - amplitude;
+}
 
 void RlsInit(void) {
   sThetaAQ16 = sThetaBQ16 = 0;
@@ -127,6 +161,10 @@ void RlsInit(void) {
   sKpResultQ8 = sKiResultQ8 = 0;
   sTicksObserved = 0U;
   sProgressSeq = 0U;
+  sDitherState = 2463534242U;   /* fixed nonzero seed -- deterministic reproducibility is a
+                                    feature here (tests, bug reports), not a shortcoming: the
+                                    dither only needs to decorrelate from Control.c's feedback,
+                                    never to be unpredictable across power cycles */
 }
 
 void RlsStart(int32_t lambdaQ8, uint32_t tickHz) {
@@ -168,7 +206,93 @@ int32_t  RlsGetThetaAQ8(void) { return Q16ToQ8Round(sThetaAQ16); }
 int32_t  RlsGetThetaBQ8(void) { return Q16ToQ8Round(sThetaBQ16); }
 int64_t  RlsGetPTrace(void) { return sP11Q16 + sP22Q16; }
 uint32_t RlsGetTicksObserved(void) { return sTicksObserved; }
+
+int32_t RlsGetDitherTorque(void) {
+  /* Gated on whether the estimate is trustworthy (sResult==OK), NOT on
+   * whether RLS is still running -- the two are deliberately independent.
+   * A run that's still RlsIsActive() but has already converged doesn't
+   * need to keep perturbing the real output; a run that later degrades
+   * back to BAD_MEASUREMENT (e.g. the mechanism's own dynamics genuinely
+   * changed) resumes dithering on its own, with no separate restart. This
+   * turns off once unnecessary: not because leaving it on continuously
+   * would cause any tracking/settle-time problem (measured -- it doesn't),
+   * but because it does measurably cost real actuator effort/heat (~33%
+   * higher RMS torque in that same measurement) for no further benefit
+   * once converged -- see RLS.h's "Torque dither" section. */
+  if (!sRunning || sResult == AUTOTUNE_RESULT_OK) return 0;
+  int32_t torqueMax = ControlGetGains()->torqueClampMax;
+  int64_t amplitude = ((int64_t)torqueMax * RLS_DITHER_PCT_Q8) / 256;
+  return DitherSample((int32_t)amplitude);
+}
 uint32_t RlsGetProgressSeq(void) { return sProgressSeq; }
+
+/* Cascade stability gate: p_target=a^2 places the VELOCITY loop's own pole,
+ * but that loop runs nested inside Control.c's existing position(P) loop
+ * (posGainQ8) -- a loop RLS never touches (see RLS.h). p_target alone says
+ * nothing about whether that combination is safe: on a lightly-damped plant
+ * (a close to 1), p_target stays close to 1 too, which can leave the outer
+ * position loop driving a velocity loop that isn't meaningfully faster than
+ * open-loop, producing a weakly-damped (or outright unstable) 3-state
+ * cascade [position error, velocity, PI integrator] once actually applied --
+ * found by exercising a real nested cascade (not this file's own simplified
+ * single-loop view) against a near-frictionless simulated plant.
+ *
+ * The exact stability condition turns out to depend ONLY on the plant pole
+ * `a` and Kpos=posGainQ8/256 -- NOT on b, which cancels out completely once
+ * Kp/Ki are derived from p_target (substituting Kp=(a-q)/b, Ki=Kp*(1-q) into
+ * the closed-loop state matrix and rescaling the integrator state by b
+ * removes every occurrence of b -- verified both algebraically and
+ * numerically). That leaves the Jury/Schur-Cohn stability test for the
+ * resulting cubic characteristic polynomial z^3+c2*z^2+c1*z+c0:
+ *   c2 = -a*q + a + q^2 - 2*q - 2
+ *   c1 = -Kpos*a*q + 2*Kpos*a + Kpos*q^2 - 2*Kpos*q + a*q - a - q^2 + 3*q + 1
+ *   c0 = -(Kpos*(a-q) + q)
+ * stable iff: P(-1)=-1+c2-c1+c0 < 0  AND  |c0|<1  AND  |c1-c0*c2| < 1-c0^2
+ * (verified against 20000 random (a,q,Kpos) samples with zero mismatches
+ * against direct eigenvalue computation). A 4th Jury condition,
+ * P(1)=Kpos*(1-q)*(a-q)>0, holds automatically given the 0<q<a<1 range
+ * MapThetaToGains() already enforces below, so it isn't checked separately.
+ * Solving this FOR p_target given an arbitrary Kpos is a quartic with no
+ * tractable closed form -- not attempted here -- but CHECKING whether a
+ * given (a, p_target, Kpos) is safe is just evaluating these three
+ * polynomials and comparing signs, cheap enough to run every tick.
+ *
+ * Reads posGainQ8 LIVE via ControlGetGains() every call, not a value
+ * snapshotted at RlsStart() time, since `set position.kp ...` can change it
+ * while RLS is still converging -- the check must track whatever position
+ * loop a candidate would actually be applied into. */
+static int CascadeStable(int64_t aQ16, int64_t qQ16) {
+  /* Clamped defensively for fixed-point product safety below, not as a
+   * policy limit on position.kp itself (Protocol.c/ConfigStore already own
+   * that limit) -- a Kpos this large is already far into "every candidate
+   * gets rejected anyway" territory, so clamping here changes no real
+   * outcome. */
+  int64_t KposQ16 = Clamp64(Q8ToQ16(ControlGetGains()->posGainQ8), 0, 16LL * RLS_SCALE);
+
+  int64_t aq = (aQ16 * qQ16) / RLS_SCALE;
+  int64_t q2 = (qQ16 * qQ16) / RLS_SCALE;
+  int64_t c2 = -aq + aQ16 + q2 - 2 * qQ16 - 2 * RLS_SCALE;
+
+  int64_t kposA  = (KposQ16 * aQ16) / RLS_SCALE;
+  int64_t kposQ  = (KposQ16 * qQ16) / RLS_SCALE;
+  int64_t kposAq = (kposA * qQ16) / RLS_SCALE;
+  int64_t kposQ2 = (kposQ * qQ16) / RLS_SCALE;
+  int64_t c1 = -kposAq + 2 * kposA + kposQ2 - 2 * kposQ + aq - aQ16 - q2 + 3 * qQ16 + RLS_SCALE;
+
+  int64_t c0 = -(kposA - kposQ + qQ16);
+
+  int64_t pMinus1 = -RLS_SCALE + c2 - c1 + c0;
+  if (pMinus1 >= 0) return 0;
+
+  int64_t absC0 = c0 < 0 ? -c0 : c0;
+  if (absC0 >= RLS_SCALE) return 0;
+
+  int64_t c0c2 = (c0 * c2) / RLS_SCALE;
+  int64_t c0sq = (c0 * c0) / RLS_SCALE;
+  int64_t lhs = c1 - c0c2; if (lhs < 0) lhs = -lhs;
+  int64_t rhs = RLS_SCALE - c0sq; if (rhs < 0) rhs = -rhs;
+  return lhs < rhs;
+}
 
 /* Proportional pole placement: Kp = (a - p_target)/b, p_target = a^2 (see
  * the file comment above MapThetaToGains's p_target definition for why
@@ -187,6 +311,9 @@ static int MapThetaToGains(int32_t *kpQ8, int32_t *kiQ8) {
   if (sThetaBQ16 < RLS_B_MIN_Q16 || sThetaBQ16 > sBMaxQ16) return 0;
 
   int64_t pTargetQ16 = (sThetaAQ16 * sThetaAQ16) / RLS_SCALE;   /* a^2, Q16.16 */
+  if (!CascadeStable(sThetaAQ16, pTargetQ16)) return 0;   /* see CascadeStable()'s comment --
+                                                               depends only on a and posGainQ8,
+                                                               checked before touching b at all */
   int64_t numQ16 = sThetaAQ16 - pTargetQ16;           /* a - a^2 = a*(1-a), Q16.16, > 0 here */
   int64_t kpQ16 = (numQ16 * RLS_SCALE) / sThetaBQ16;  /* (a - p_target)/b, Q16.16 */
   if (kpQ16 <= 0) return 0;                            /* non-physical candidate -- reject */

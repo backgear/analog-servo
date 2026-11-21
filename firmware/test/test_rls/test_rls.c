@@ -14,6 +14,7 @@
 #include "Control.h"
 #include "main.h"
 #include "Encoder.h"
+#include "Output.h"   /* TORQUE_FULL_SCALE only, for setUp()'s torque clamp */
 #include "usart.h"
 #include "usbd_cdc_composite_if.h"
 #include "usbd_cdc_composite.h"
@@ -111,7 +112,24 @@ void AppSetAccelerationFeedforward(int32_t c) { (void)c; }
 void AppSetVelocityJerk(int32_t c) { (void)c; }
 void AppSetPositionMoveFeedforward(int32_t c) { (void)c; }
 
-void setUp(void) { RlsInit(); }
+void setUp(void) {
+  RlsInit();
+  /* CONFIG_DEFAULT_POS_GAIN_Q8 (ConfigStore.h) -- the real shipped default,
+   * not an arbitrary placeholder: MapThetaToGains()'s cascade-stability gate
+   * (see RLS.c's CascadeStable()) reads posGainQ8 live via
+   * ControlGetGains(), so every existing test below is now implicitly
+   * exercising that gate too, against the SAME position gain real hardware
+   * boots with -- not Control.c's own struct-initializer fallback (256,
+   * which the gate would reject outright for this file's a=0.90 plant, see
+   * test_rejects_cascade_unstable_candidate below). */
+  ControlGains gains = {0};
+  gains.posGainQ8 = CONFIG_DEFAULT_POS_GAIN_Q8;
+  gains.torqueClampMin = -TORQUE_FULL_SCALE;
+  gains.torqueClampMax = TORQUE_FULL_SCALE;   /* real shipped default -- also needed for
+                                                  RlsGetDitherTorque(), which sizes its
+                                                  amplitude off torqueClampMax (see RLS.c) */
+  ControlInit(&gains);
+}
 void tearDown(void) {}
 
 /* ---- synthetic plant: v[n+1] = trueA*v[n] + trueB*u[n], driven through
@@ -231,6 +249,50 @@ static void test_bad_measurement_rejected_not_silently_applied(void) {
   TEST_ASSERT_EQUAL_INT(AUTOTUNE_RESULT_BAD_MEASUREMENT, RlsGetResult());
 }
 
+static void test_dither_present_while_unconverged(void) {
+  TEST_ASSERT_EQUAL_INT32(0, RlsGetDitherTorque());   /* idle: never dithers */
+  RlsStart(256, 1000U);
+  TEST_ASSERT_EQUAL_INT(AUTOTUNE_RESULT_NONE, RlsGetResult());
+  /* Not yet converged -- at least one of several consecutive samples must
+   * be genuinely nonzero (a fixed-seed deterministic sequence could, in
+   * principle, land on 0 once; requiring EVERY sample to be nonzero would
+   * be a flakier assertion than requiring at least one to be). */
+  int sawNonzero = 0;
+  for (int i = 0; i < 8; i++) {
+    if (RlsGetDitherTorque() != 0) sawNonzero = 1;
+  }
+  TEST_ASSERT_TRUE(sawNonzero);
+}
+
+static void test_dither_turns_off_once_converged(void) {
+  SimReset();
+  RlsStart(256, 1000U);
+  RunMove(1500U, 10U);
+  TEST_ASSERT_EQUAL_INT(AUTOTUNE_RESULT_OK, RlsGetResult());
+  for (int i = 0; i < 8; i++) {
+    TEST_ASSERT_EQUAL_INT32(0, RlsGetDitherTorque());   /* converged -- no longer needed,
+                                                             independent of RlsIsActive() still
+                                                             being true (see RLS.h) */
+  }
+  TEST_ASSERT_TRUE(RlsIsActive());   /* confirms the above really is testing "converged, still
+                                         running", not "stopped" */
+}
+
+static void test_dither_scales_with_torque_clamp(void) {
+  RlsStart(256, 1000U);   /* result stays NONE/BAD_MEASUREMENT -- dither active */
+  ControlGains gains = *ControlGetGains();
+  gains.torqueClampMax = 100;
+  ControlSetGains(&gains);
+  int32_t maxSeen = 0;
+  for (int i = 0; i < 64; i++) {
+    int32_t d = RlsGetDitherTorque();
+    int32_t absD = d < 0 ? -d : d;
+    if (absD > maxSeen) maxSeen = absD;
+  }
+  TEST_ASSERT_TRUE(maxSeen > 0);
+  TEST_ASSERT_TRUE(maxSeen <= 100);   /* never exceeds the live torqueClampMax it was sized from */
+}
+
 static void test_stop_freezes_state(void) {
   SimReset();
   RlsStart(256, 1000U);
@@ -266,10 +328,18 @@ static void test_tick_rate_independence(void) {
    * regression test for RLS.c not baking in a 1kHz assumption. */
   double periods[2] = { 1.0 / 1000.0, 1.0 / 4000.0 };
   uint32_t tickHz[2] = { 1000U, 4000U };
-  double trueTau = 0.05;        /* 50ms friction time constant, same physical plant both runs */
+  double trueTau = 0.003;       /* 3ms friction time constant, same physical plant both runs --
+                                    NOT 0.05s: that made 'a' close enough to 1 at 4kHz (0.995)
+                                    that CascadeStable()'s gate (see RLS.c) correctly refused it
+                                    at this file's CONFIG_DEFAULT_POS_GAIN_Q8 setUp() default --
+                                    a real finding about that choice of plant, not a flaw in the
+                                    gate; picking a stiffer/faster plant here keeps this test
+                                    about tick-rate independence specifically, not cascade
+                                    margin (covered by its own tests, see
+                                    test_rejects_cascade_unstable_candidate below) */
   double trueKPhys = 1.0e5;     /* counts/sec^2 per raw torque unit, same physical plant both runs --
                                     chosen so the resulting b lands comfortably inside RLS.c's
-                                    generous placeholder clamp at both tick rates (b~0.10 @ 1kHz,
+                                    generous placeholder clamp at both tick rates (b~0.085 @ 1kHz,
                                     b~0.006 @ 4kHz, see the T^2 scaling this is testing) */
 
   for (int run = 0; run < 2; run++) {
@@ -293,6 +363,71 @@ static void test_tick_rate_independence(void) {
     TEST_ASSERT_TRUE(RlsGetKpResultQ8() > 0);
     TEST_ASSERT_TRUE(RlsGetKiResultQ8() > 0);
   }
+}
+
+static void test_rejects_cascade_unstable_candidate(void) {
+  /* SAME plant as test_convergence_within_tolerance (trueA=0.90, trueB=0.10)
+   * -- a and b converge fine either way, proven by the OK case right below.
+   * Only Kpos changes: posGainQ8=256 (Kpos=1.0) is a plausible value a user
+   * could configure, but combined with this plant's p_target=a^2=0.81 it
+   * fails CascadeStable() (see RLS.c) -- the resulting candidate would
+   * destabilize Control.c's position loop if applied, so it must be
+   * rejected, not silently handed to `autotune apply`. */
+  ControlGains gains = {0};
+  gains.posGainQ8 = 256;
+  ControlSetGains(&gains);
+
+  SimReset();
+  RlsStart(256, 1000U);
+  RunMove(1500U, 10U);
+
+  TEST_ASSERT_INT32_WITHIN(5, 230, RlsGetThetaAQ8());   /* theta itself still converges... */
+  TEST_ASSERT_INT32_WITHIN(5, 26, RlsGetThetaBQ8());
+  TEST_ASSERT_EQUAL_INT(AUTOTUNE_RESULT_BAD_MEASUREMENT, RlsGetResult());   /* ...but the
+                                                                                candidate is
+                                                                                refused */
+}
+
+static void test_accepts_cascade_stable_candidate_at_lower_posgain(void) {
+  /* Identical plant and posGainQ8 choice to the rejection test above, EXCEPT
+   * a gentler posGainQ8=16 (Kpos=0.0625) -- proves the gate is genuinely
+   * Kpos-dependent (same a=0.90 plant, opposite verdict), not a blanket
+   * "a=0.90 is always rejected" rule. */
+  ControlGains gains = {0};
+  gains.posGainQ8 = 16;
+  ControlSetGains(&gains);
+
+  SimReset();
+  RlsStart(256, 1000U);
+  RunMove(1500U, 10U);
+
+  TEST_ASSERT_EQUAL_INT(AUTOTUNE_RESULT_OK, RlsGetResult());
+  TEST_ASSERT_TRUE(RlsGetKpResultQ8() > 0);
+  TEST_ASSERT_TRUE(RlsGetKiResultQ8() > 0);
+}
+
+static void test_posgain_change_takes_effect_live(void) {
+  /* CascadeStable() reads posGainQ8 via ControlGetGains() every call, not a
+   * value captured once at RlsStart() -- this is the regression test for
+   * that specific design choice. Starts under the unstable posGainQ8=256
+   * from the rejection test above; if the gate were snapshotted at start,
+   * it would stay stuck on BAD_MEASUREMENT even after the config below
+   * changes to a value the SAME plant is known to pass under. */
+  ControlGains gains = {0};
+  gains.posGainQ8 = 256;
+  ControlSetGains(&gains);
+
+  SimReset();
+  RlsStart(256, 1000U);
+  RunMove(1500U, 10U);
+  TEST_ASSERT_EQUAL_INT(AUTOTUNE_RESULT_BAD_MEASUREMENT, RlsGetResult());
+
+  gains.posGainQ8 = 16;   /* e.g. a live `set position.kp 16` from the host */
+  ControlSetGains(&gains);
+  RunMove(200U, 10U);   /* a few more ticks is enough -- theta is already converged,
+                            only the gate's verdict needs to catch up */
+
+  TEST_ASSERT_EQUAL_INT(AUTOTUNE_RESULT_OK, RlsGetResult());
 }
 
 /* ---- GainGlide ---- */
@@ -353,9 +488,15 @@ int main(void) {
   RUN_TEST(test_convergence_within_tolerance);
   RUN_TEST(test_covariance_does_not_wind_up_during_pause);
   RUN_TEST(test_bad_measurement_rejected_not_silently_applied);
+  RUN_TEST(test_dither_present_while_unconverged);
+  RUN_TEST(test_dither_turns_off_once_converged);
+  RUN_TEST(test_dither_scales_with_torque_clamp);
   RUN_TEST(test_stop_freezes_state);
   RUN_TEST(test_restart_clears_previous_estimate);
   RUN_TEST(test_tick_rate_independence);
+  RUN_TEST(test_rejects_cascade_unstable_candidate);
+  RUN_TEST(test_accepts_cascade_stable_candidate_at_lower_posgain);
+  RUN_TEST(test_posgain_change_takes_effect_live);
   RUN_TEST(test_glide_reaches_target_exactly_at_total_ticks);
   RUN_TEST(test_glide_is_monotonic_between_endpoints);
   RUN_TEST(test_glide_inactive_is_a_noop);
