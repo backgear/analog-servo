@@ -31,6 +31,20 @@ class MetricsTests(unittest.TestCase):
         metrics = measure(frames)
         self.assertEqual(metrics['moving']['torque_delta_rms'], 0)
 
+    def test_tail_motion_and_torque_ripple_are_not_hidden_by_dc_bias(self):
+        frames = [frame(i) for i in range(1000)]
+        for f in frames:
+            f['torque'] = 100
+        for i, f in enumerate(frames[-250:]):
+            f['position'] = 100 + (i % 2)
+            f['torque'] = 100 + (10 if i % 2 else -10)
+        hold = hold_metrics(frames)[0]
+        self.assertEqual(hold['tail_torque_mean'], 100)
+        self.assertEqual(hold['tail_torque_ripple_rms'], 10)
+        self.assertEqual(hold['motor_tail_position_span'], 1)
+        self.assertEqual(hold['load_tail_position_span'], 0)
+        self.assertEqual(hold['tail_seconds'], 0.25)
+
     def test_saturation_and_signed_error_metrics(self):
         frames = [frame(0, 97), frame(1, 104)]
         frames[0]['torque'] = 1000

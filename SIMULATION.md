@@ -110,6 +110,88 @@ Tests: `python3 -m unittest discover -s tools -p 'test_simmy*.py'` and
 External-checkout integration tests skip explicitly if simmy is unavailable;
 metric and renderer tests still run independently (renderer needs matplotlib).
 
+## Stopping investigation (experimental, partial improvement)
+
+```sh
+python3 tools/simmy_stop_report.py
+# Data/report only:
+python3 tools/simmy_stop_report.py --no-plots
+# Individual candidate run:
+python3 tools/simmy_plot.py --scenario sequence --tune balanced --feedback encoder \
+  --idle-gains 64 2048 16 0 1 --out-dir .cache/simmy-idle
+```
+
+Read **`.cache/simmy-stopping-report/report.md`**, `forward-stop.png` and
+`final-stop.png`. This 23-case report retains failures as well as successes:
+model/encoder feedback, deadband-only, an idle schedule, constant low-bandwidth
+gains, ripple/friction ablations, more mechanical substeps, other speeds and
+directions, sparse pulses, zero jitter and an extended final hold.
+
+### Sensor fidelity
+
+`--feedback encoder` uses current minus previous integer position, matching
+Encoder.c's measurement convention; this also applies to the measured load
+velocity. The initial previous position is the initial encoder count.
+`--feedback model` (the single-run default for comparability with the tune
+experiments above) rounds instantaneous model velocity instead. These differ
+near encoder transitions and during acceleration. Metadata records the mode.
+Use encoder mode for new firmware-facing stopping investigations; neither mode
+models real timer/electrical timing or wraparound. Changing measurement mode
+alone does not remove the limit cycle.
+
+### Pulse-idle gain candidate
+
+`--idle-gains POS_KP VEL_KP VEL_KI FILTER_SHIFT DEADBAND` is a **host-only,
+opt-in gain schedule**, not a new controller implementation or firmware default.
+After `--idle-after-ticks 50` consecutive zero pulse increments, it reapplies
+existing ControlGains through ControlSetGains. Any new pulse restores the moving
+gains before that tick's control call. All PI state is retained: no reset,
+position snap, torque-off, integral leak, analytic phase lookup or load input.
+The threshold uses only counted pulse history, so very slow pulse trains can
+also trigger it; inactivity is not proof of a commanded stop. `idle_active`
+records the decision every tick. Explicit gain/deadband values remain in run
+metadata. The candidate uses Q8.8 **64 / 2048 / 16**, filter 0, existing velocity
+error deadband 1. The latter is not an unconditional position-error deadband;
+large errors still reach the controller.
+
+On the default unchanged plant, with encoder-delta feedback:
+
+| Hold measurement | Balanced, unchanged | Pulse-idle candidate |
+| --- | ---: | ---: |
+| Forward motor settling time | Not settled | 0.077 s |
+| Final motor settling time | Not settled | 0.076 s |
+| Forward final-250-ms motor span | 48 counts | 0 counts |
+| Final final-250-ms motor span | 57 counts | 0 counts |
+| Forward tail torque ripple RMS (DC removed) | 62.7 | 0.0 |
+| Final tail torque ripple RMS (DC removed) | 64.3 | 0.0 |
+| Motion-only motor error RMS | 11.0 counts | 10.7 counts |
+| Motion-only load error RMS | 19.6 counts | 19.9 counts |
+
+This is a **partial improvement, not a robust stopping fix**. At 1000 counts/s,
+the candidate's final motor error remains 6 counts and fails the unchanged
+±5-count settling criterion. Disabling friction exposes severe moving-loop
+instability even if the idle schedule recovers at a later hold. More substeps
+and removing ripple alone do not cure the unchanged controller's hold cycle.
+The moving tune's reliance on plant friction/damping needs a separate stability
+review. Do not select a preset from one favorable endpoint or loosen the
+metrics to declare success. Existing deadband alone does not solve this case.
+
+### Motor settling is not load centering
+
+The candidate still leaves the forward load 11 counts off target, despite a
+stationary motor within 2 counts. For the bundled plant, static load friction
+80 and spring stiffness 3.16 plus backlash half-gap 0.5 can support approximately
+`80/3.16 + 0.5 = 25.8` counts of static deflection. The motor encoder cannot tell
+which admissible load offset is present. Motor-only control cannot guarantee
+±5-count load positioning in that model: mechanics, load measurement, or the
+physical positioning requirement must be revisited separately. This is not a
+reason to feed simulator load truth back into the controller.
+
+Hold metrics now include final-250-sample motor/load position span, velocity
+RMS, mean torque and DC-removed torque-ripple RMS. These distinguish being in
+the tolerance band from a quiet hold, and steady holding effort from chatter.
+None of these host experiments is bench-validated or enabled in production.
+
 ## C → Python boundary
 
 ```text

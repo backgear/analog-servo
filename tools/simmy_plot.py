@@ -47,9 +47,12 @@ def sequence_ticks(ramp_seconds):
 
 
 def run_driver(binary, config, gains, ticks=2000, rate=2500, ramp_seconds=1, jitter=0.3,
-               scenario='ramp-cruise', feedforward='none', ff_shift=3, accel_ff_q8=18432):
+               scenario='ramp-cruise', feedforward='none', ff_shift=3, accel_ff_q8=18432,
+               feedback='model', deadband=0, idle_gains=None, idle_after_ticks=50):
     cmd = [str(binary), str(config), str(ticks), str(rate), str(ramp_seconds), str(jitter),
-           *map(str, gains), scenario, feedforward, str(ff_shift), str(accel_ff_q8)]
+           *map(str, gains), scenario, feedforward, str(ff_shift), str(accel_ff_q8),
+           feedback, str(deadband),
+           ','.join(map(str, idle_gains)) if idle_gains else 'off', str(idle_after_ticks)]
     result = subprocess.run(cmd, check=True, capture_output=True, text=True)
     return json.loads(result.stdout)
 
@@ -85,6 +88,10 @@ def save_run(out, frames, config, simmy, parameters):
                     plant=json.loads(config.read_text()), tick_hz=1000, source_sha256=hashes,
                     torque_clamp=[-1000, 1000], pulse_seed=12345, analog_noise_seed=1,
                     host_cc=os.environ.get('CC', 'cc'),
+                    feedback=parameters.get('feedback', 'model'),
+                    velocity_deadband=parameters.get('velocity_deadband', 0),
+                    idle_gains=parameters.get('idle_gains'),
+                    idle_after_ticks=parameters.get('idle_after_ticks', 50),
                     effective_accel_ff_q8=(parameters.get('accel_ff_q8', 18432)
                                            if parameters.get('feedforward') == 'velocity-acceleration' else 0))
     (out / 'run.json').write_text(json.dumps(metadata, indent=2) + '\n')
@@ -109,6 +116,15 @@ def main():
     ap.add_argument('--vel-kp', type=int, help='override preset: raw Q8.8 integer')
     ap.add_argument('--vel-ki', type=int, help='override preset: raw Q8.8 integer, per tick')
     ap.add_argument('--filter-shift', type=int, choices=range(5), help='override preset velocity filter')
+    ap.add_argument('--feedback', choices=('model', 'encoder'), default='model',
+                    help='model: rounded instantaneous velocity; encoder: integer position differences')
+    ap.add_argument('--velocity-deadband', type=int, choices=range(5), default=0,
+                    help='existing Control.c velocity-error deadband, counts/tick')
+    ap.add_argument('--idle-gains', type=int, nargs=5,
+                    metavar=('POS_KP', 'VEL_KP', 'VEL_KI', 'FILTER_SHIFT', 'DEADBAND'),
+                    help='EXPERIMENTAL gains after counted-pulse inactivity; integrator retained')
+    ap.add_argument('--idle-after-ticks', type=int, default=50,
+                    help='consecutive zero pulse deltas before switching to idle gains')
     ap.add_argument('--feedforward', choices=('none', 'velocity', 'velocity-acceleration'),
                     default='none', help='EXPERIMENTAL Mode A path; never changes firmware')
     ap.add_argument('--ff-shift', type=int, choices=range(9), default=3,
@@ -135,6 +151,12 @@ def main():
     if any(not 0 <= v <= 32767 for v in (args.pos_kp, args.vel_kp, args.vel_ki)):
         ap.error('raw Q8.8 gains must be between 0 and 32767')
 
+    if not 1 <= args.idle_after_ticks <= 1000000:
+        ap.error('idle-after-ticks must be 1..1000000')
+    if args.idle_gains and (any(not 0 <= v <= 32767 for v in args.idle_gains[:3])
+                           or not 0 <= args.idle_gains[3] <= 4
+                           or not 0 <= args.idle_gains[4] <= 4):
+        ap.error('invalid idle gains: gains 0..32767, filter/deadband 0..4')
     if not 0 <= args.accel_ff_q8 <= 32767:
         ap.error('--accel-ff-q8 must be between 0 and 32767')
     simmy = args.simmy_dir.expanduser().resolve()
@@ -151,7 +173,9 @@ def main():
         frames = run_driver(binary, config,
                             (args.pos_kp, args.vel_kp, args.vel_ki, args.filter_shift),
                             args.ticks, args.rate, args.ramp_seconds, args.jitter, args.scenario,
-                            args.feedforward, args.ff_shift, args.accel_ff_q8)
+                            args.feedforward, args.ff_shift, args.accel_ff_q8,
+                            args.feedback, args.velocity_deadband,
+                            args.idle_gains, args.idle_after_ticks)
     frames_path = out / 'frames.json'
     save_run(out, frames, config, simmy, vars(args))
     print(f'Saved {frames_path}', flush=True)
@@ -160,7 +184,9 @@ def main():
                         '--frames', str(frames_path), '--out', str(out / 'telemetry.png'),
                         '--title', ('Control.c + simmy — SIMULATED, not a bench capture'
                                     + (f'\nEXPERIMENTAL {args.feedforward} feedforward'
-                                       if args.feedforward != 'none' else ''))], check=True)
+                                       if args.feedforward != 'none' else '')
+                                    + ('\nEXPERIMENTAL pulse-idle gain schedule'
+                                       if args.idle_gains else ''))], check=True)
 
 
 if __name__ == '__main__':

@@ -33,6 +33,9 @@ for setup, parameters, PlatformIO dependency options, and simulation limits.
 compares baseline, tracking-focused and balanced tunes over a full stop/hold/reverse
 sequence, with separate experimental velocity/acceleration feedforward cases.
 It writes `.cache/simmy-report/report.md`, scored data and comparison plots.
+`python3 tools/simmy_stop_report.py` investigates stopping with encoder-delta
+feedback and an opt-in pulse-idle gain schedule; its report keeps the remaining
+motor/load settling failures explicit. See SIMULATION.md for the limits.
 These outputs are synthetic, not bench-validated.
 
 These six are all generated, not captured -- see `tools/stepdir_pulse_demo.py`

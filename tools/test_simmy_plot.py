@@ -122,6 +122,45 @@ class SimmyPlotTests(unittest.TestCase):
             self.assertTrue(all(abs(f['torque']) <= 1000 for f in accel))
             self.assertEqual(json.loads((out / 'run.json').read_text())['effective_accel_ff_q8'], 18432)
 
+    def test_encoder_feedback_is_integer_position_difference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            frames = self.run_simulation(Path(tmp), '--feedback', 'encoder', '--rate', '-2500')
+            previous_position = previous_load = 0
+            for f in frames:
+                self.assertEqual(f['velocity'], f['position'] - previous_position)
+                self.assertEqual(f['load_velocity'], f['load_position'] - previous_load)
+                previous_position, previous_load = f['position'], f['load_position']
+
+    def test_idle_schedule_uses_only_counted_pulse_history_and_retains_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            baseline = self.run_simulation(out, '--scenario', 'sequence', '--tune', 'balanced',
+                                            '--feedback', 'encoder')
+            scheduled = self.run_simulation(out, '--scenario', 'sequence', '--tune', 'balanced',
+                                             '--feedback', 'encoder', '--idle-gains', '64', '2048',
+                                             '16', '0', '1')
+            self.assertEqual([f['cmd_position'] for f in baseline],
+                             [f['cmd_position'] for f in scheduled])
+            idle_ticks = 0
+            for f in scheduled:
+                idle_ticks = idle_ticks + 1 if f['pulse_delta'] == 0 else 0
+                self.assertEqual(f['idle_active'], idle_ticks >= 50)
+            from simmy_metrics import measure
+            before, after = measure(baseline), measure(scheduled)
+            for old, new in zip(before['holds'], after['holds']):
+                self.assertIsNone(old['motor_settling_seconds'])
+                self.assertIsNotNone(new['motor_settling_seconds'])
+                self.assertLess(new['motor_settling_seconds'], 0.2)
+                self.assertLess(new['tail_torque_ripple_rms'], old['tail_torque_ripple_rms'])
+            # The load is NOT silently declared fixed: it remains off-center.
+            self.assertIsNone(after['holds'][0]['load_settling_seconds'])
+            identical = self.run_simulation(out, '--scenario', 'sequence', '--tune', 'balanced',
+                                             '--feedback', 'encoder', '--idle-gains', '256', '1024',
+                                             '16', '1', '0')
+            # Reapplying the same gains must not reset/overwrite integral state.
+            strip_flag = lambda frames: [{k: v for k, v in f.items() if k != 'idle_active'} for f in frames]
+            self.assertEqual(strip_flag(baseline), strip_flag(identical))
+
     def test_negative_rate(self):
         with tempfile.TemporaryDirectory() as tmp:
             frames = self.run_simulation(Path(tmp), '--rate', '-2500')

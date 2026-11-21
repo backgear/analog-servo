@@ -29,6 +29,11 @@ def hold_metrics(frames, band_counts=5, velocity_band=1, dwell_seconds=0.25):
                           dwell_seconds=dwell_seconds, torque_rms=rms(f['torque'] for f in data),
                           torque_delta_rms=rms(b['torque'] - a['torque']
                                               for a, b in zip(data, data[1:])))
+            tail = data[-min(len(data), 250):]
+            mean_torque = sum(f['torque'] for f in tail) / len(tail)
+            record.update(tail_seconds=len(tail) / 1000,
+                          tail_torque_mean=mean_torque,
+                          tail_torque_ripple_rms=rms(f['torque'] - mean_torque for f in tail))
             for label, key, velocity in (('motor', 'position', 'velocity'),
                                          ('load', 'load_position', 'load_velocity')):
                 bad = [i for i, f in enumerate(data)
@@ -39,6 +44,8 @@ def hold_metrics(frames, band_counts=5, velocity_band=1, dwell_seconds=0.25):
                 record[label + '_settling_seconds'] = (
                     data[first]['t'] - data[0]['t'] if enough else None)
                 record[label + '_final_error'] = data[-1]['cmd_position'] - data[-1][key]
+                record[label + '_tail_position_span'] = max(f[key] for f in tail) - min(f[key] for f in tail)
+                record[label + '_tail_velocity_rms'] = rms(f[velocity] for f in tail)
             holds.append(record)
         start = end
     return holds

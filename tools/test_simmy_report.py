@@ -41,6 +41,24 @@ class ReportTests(unittest.TestCase):
                                  18432 if row['feedforward'] == 'velocity-acceleration' else 0)
             self.assertFalse(list(out.glob('*.png')))
 
+    def test_stopping_report_preserves_validation_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            subprocess.run([sys.executable, str(ROOT / 'tools/simmy_stop_report.py'),
+                            '--simmy-dir', str(SIMMY), '--out-dir', str(out), '--no-plots'],
+                           check=True, capture_output=True, text=True)
+            rows = {r['name']: r for r in json.loads((out / 'scores.json').read_text())}
+            self.assertEqual(len(rows), 23)
+            self.assertEqual(rows['balanced-encoder']['parameters']['feedback'], 'encoder')
+            self.assertEqual(rows['balanced-model']['parameters']['feedback'], 'model')
+            self.assertIsNone(rows['idle-schedule']['metrics']['holds'][0]['load_settling_seconds'])
+            self.assertIsNone(rows['slow-idle']['metrics']['holds'][-1]['motor_settling_seconds'])
+            self.assertGreater(rows['smooth-idle']['metrics']['moving']['motor_rms'], 100)
+            text = (out / 'report.md').read_text()
+            self.assertIn('not a robust fix', text)
+            self.assertIn('Not settled', text)
+            self.assertIn('Tail motor span', text)
+
 
 if __name__ == '__main__':
     unittest.main()
