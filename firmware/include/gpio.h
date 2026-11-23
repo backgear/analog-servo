@@ -10,7 +10,7 @@
 /* Two boards: NUCLEO-L152RE (board MB1136 rev C, `main`'s bench-validated
  * target -- see docs/bringup.md for its one required board mod, the
  * DAC_OUT2/LD2 solder-bridge rework) and STM32F103C8T6 "Blue Pill" (this
- * `f103` branch -- no bench hours at all, see docs/boards.md). Pin numbers
+ * target -- see README.md for validation limits). Pin numbers
  * are identical on both except where a board comment below says otherwise.
  *
  * UNVERIFIED WITHOUT THE RESPECTIVE DATASHEET AF TABLE IN HAND for a few of

@@ -8,14 +8,12 @@ conventions.
 ## What this is
 
 Closed-loop analog torque-command servo controller firmware
-(STM32L152/PlatformIO). The project's one real supported board is the
-NUCLEO-L152RE, built and tested on `main`. Hardware paths that haven't
-had real bench time (another MCU family, a second dedicated telemetry
-UART, two-phase/Hall commutation output, Tamagawa absolute-encoder
-feedback), plus one bench-validated feature that needs a design-review
-pass before it can land (emulated-tach feedback), live as draft PR
-branches instead of behind a build flag in `main` — see *Branch
-convention* below.
+(STM32/PlatformIO). Supported build targets are NUCLEO-L152RE (DAC)
+and STM32F103C8T6 Blue Pill (RC-filtered PWM). L152 has closed-loop bench
+time; F103 boot, USB, reset, and flash-address fixes have been checked on
+hardware. F103 Mode A and Mode C remain not yet bench-validated. Other
+hardware paths and control experiments live on separate branches — see
+*Branch convention* below.
 
 ## Repo layout
 
@@ -54,8 +52,6 @@ Unverified/no-bench-hours hardware paths currently live as draft PRs off
 - `l4` — STM32L431 support (base: `monitor-usart`, since L431 has no USB
   at all).
 - `two-phase-output` — Hall-commutated two-phase analog output.
-- `f103` — STM32F103 ("Blue Pill") support, PWM+RC output stage (no
-  on-chip DAC on that part).
 - `tamagawa-feedback` — Tamagawa absolute-encoder feedback (bring-up
   stage, not a port of working code — the protocol decode itself is
   still unbuilt).
