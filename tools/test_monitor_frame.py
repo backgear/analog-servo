@@ -7,7 +7,7 @@ from monitor_frame import FRAME_LEN, STRUCT_FMT, SYNC_BYTE, FrameSync, crc8, dec
 
 def frame(seq=123, status=0x25, reason=0, sync=SYNC_BYTE):
     data = struct.pack(STRUCT_FMT, sync, seq, -42, 7, -1000, 99, -8,
-                       status, reason, 0)
+                       -123 * 65536, status, reason, 0)
     return data[:-1] + bytes([crc8(data[:-1])])
 
 
@@ -24,6 +24,7 @@ class MonitorFrameTests(unittest.TestCase):
         self.assertEqual(decoded['torque'], -1000)
         self.assertEqual(decoded['cmd_position'], 99)
         self.assertEqual(decoded['cmd_velocity'], -8)
+        self.assertEqual(decoded['velocity_integral_q16'], -123 * 65536)
         self.assertEqual(decoded['mode'], 'host')
         self.assertTrue(decoded['enabled'])
         self.assertTrue(decoded['hw_enable'])

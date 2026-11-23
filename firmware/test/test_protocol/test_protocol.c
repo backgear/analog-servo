@@ -551,13 +551,14 @@ static void test_monitor_schema_json_describes_the_real_frame(void) {
   TEST_ASSERT_EQUAL_INT32('{', json[0]);
   /* frame_size/sync come from sizeof(MonitorFrame)/MONITOR_FRAME_SYNC, not
    * hand-typed -- these two literal checks lock in today's known-correct
-   * values (28 bytes, sync 0xAA = 170) as a regression guard, same as the
+   * values (32 bytes, sync 0xAA = 170) as a regression guard, same as the
    * rest of this file pins other known-good behavior. */
-  TEST_ASSERT_NOT_NULL(strstr(json, "\"frame_size\":28"));
+  TEST_ASSERT_NOT_NULL(strstr(json, "\"frame_size\":32"));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"sync\":170"));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"name\":\"seq\",\"offset\":1,\"size\":4,\"type\":\"u32\""));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"name\":\"torque_command\",\"offset\":13,\"size\":4,\"type\":\"i32\""));
-  TEST_ASSERT_NOT_NULL(strstr(json, "\"name\":\"crc8\",\"offset\":27,\"size\":1,\"type\":\"u8\""));
+  TEST_ASSERT_NOT_NULL(strstr(json, "\"name\":\"velocity_integral\",\"offset\":25,\"size\":4,\"type\":\"i32\""));
+  TEST_ASSERT_NOT_NULL(strstr(json, "\"name\":\"crc8\",\"offset\":31,\"size\":1,\"type\":\"u8\""));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"cycle_start\":7"));
   /* Same name list Protocol.c's `fault.reason` ENUM_META quotes -- both
    * read FAULT_REASON_NAMES_JSON, so this also guards against the two
@@ -586,7 +587,7 @@ static void test_monitor_cli_schema_matches_inband_schema(void) {
    * same reason) -- channel 0's copy picks up that one extra line ending
    * on top of the schema's own single trailing '\n'; channel 1's in-band
    * reply (tested above) has no such wrapper and is the pure bytes. */
-  char expected[1100];
+  char expected[1200];
   snprintf(expected, sizeof(expected), "%s\r\n", MonitorGetSchemaJson());
   capReset();
   run("monitor schema");

@@ -119,6 +119,17 @@ external drive's own fault output, so a wiring mistake it fails to catch
 can go unnoticed until something gets hot. It is a hobby project, not a
 certified safety system.
 
+## Integrator telemetry
+
+The binary monitor frame is 32 bytes. `velocity_integral_q16` reports the
+PI integrator state in torque-command units ×65536; divide by 65536 for
+the signed torque scale. This is internal controller state, not measured
+current or torque. Update host decoders with the firmware: the former
+28-byte fixed-layout decoder cannot read this stream. `monitor schema`
+describes the current offsets. History storage grows by 1,200 bytes.
+This isolated telemetry change passes native and synthetic tests but is
+not yet bench-validated on either board.
+
 ## Two worked examples
 
 Written up in `docs/examples/` (not yet part of this first published
