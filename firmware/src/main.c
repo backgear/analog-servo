@@ -412,6 +412,8 @@ int32_t  AppRlsGetThetaBQ8(void) { return RlsGetThetaBQ8(); }
 int64_t  AppRlsGetPTrace(void) { return RlsGetPTrace(); }
 uint32_t AppRlsGetTicksObserved(void) { return RlsGetTicksObserved(); }
 uint32_t AppRlsGetProgressSeq(void) { return RlsGetProgressSeq(); }
+void     AppRlsSetAggressiveness(int32_t extraSquarings) { RlsSetPoleAggressiveness(extraSquarings); }
+int32_t  AppRlsGetAggressiveness(void) { return RlsGetPoleAggressiveness(); }
 void     AppRlsApply(void) {
   if (RlsGetResult() != AUTOTUNE_RESULT_OK) return;
   /* position.kp is deliberately untouched -- RLS only ever estimates the

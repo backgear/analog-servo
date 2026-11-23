@@ -79,6 +79,8 @@ int32_t  AppRlsGetThetaBQ8(void) { return 0; }
 int64_t  AppRlsGetPTrace(void) { return 0; }
 uint32_t AppRlsGetTicksObserved(void) { return 0; }
 uint32_t AppRlsGetProgressSeq(void) { return 0; }
+void     AppRlsSetAggressiveness(int32_t extraSquarings) { (void)extraSquarings; }
+int32_t  AppRlsGetAggressiveness(void) { return 0; }
 void     AppRlsApply(void) {}
 void     AppAutotuneApply(void) {}
 void       AppSignalStart(SignalType t, SignalTarget tg, int32_t amp, uint32_t hp, uint32_t dur) {

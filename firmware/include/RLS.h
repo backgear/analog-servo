@@ -105,19 +105,29 @@ int  RlsIsActive(void);
 /* Raises the target closed-loop pole past the default p_target=a^2 (see
  * RLS.c's file comment above RLS_POLE_AGGRESSIVENESS_MAX) -- each unit
  * squares the target once more (0=a^2 [default], 1=a^4, 2=a^8, 3=a^16,
- * 4=a^32; clamped to that range). Reach for this when the plant's own
- * open-loop pole estimate (RlsGetThetaAQ8()) sits close to 1 (lightly
- * damped under the linear approximation) and the default a^2 target
- * produces a candidate that converges (AUTOTUNE_RESULT_OK) but tracks
- * noticeably weaker than a known-good hand tune -- found and measured
- * against a real, weak-torque-authority axis model (see
- * simmy's examples/rls_axis_command_v2/), where a^16 (3) was the sweet
- * spot. Costs nothing and changes nothing when left at the default 0 --
- * every existing caller's behavior is unaffected unless it calls this.
- * Persists across RlsStart() (only RlsInit() resets it to 0), since it's
- * a property of the plant the caller already knows about, not a per-
- * attempt tuning value. */
+ * 4=a^32, 5=a^64, 6=a^128; clamped to that range). Reach for this when the
+ * plant's own open-loop pole estimate (RlsGetThetaAQ8()) sits close to 1
+ * (lightly damped under the linear approximation) and the default a^2
+ * target produces a candidate that converges (AUTOTUNE_RESULT_OK) but
+ * tracks noticeably weaker than a known-good hand tune. Found and
+ * measured against a real, weak-torque-authority axis model (see
+ * simmy's examples/rls_axis_command_v2/): a full sweep traces a real
+ * peak, not a plateau -- convergence rises from a^2 through a^64, then
+ * CascadeStable's own margin starts rejecting overly aggressive targets
+ * and convergence collapses past a^128. **5 (a^64) is the sweet spot**,
+ * with one level of documented headroom below where it falls back off --
+ * see RLS.c's file comment for the full per-level numbers. This is an
+ * empirically-found knob, not a closed-form optimum: a different plant's
+ * own peak could sit elsewhere, so treat 5 as a starting point to verify
+ * against a given plant's own convergence/quality tradeoff, not a
+ * universal constant. Costs nothing and changes nothing when left at the
+ * default 0 -- every existing caller's behavior is unaffected unless it
+ * calls this. Persists across RlsStart() (only RlsInit() resets it to 0),
+ * since it's a property of the plant the caller already knows about, not
+ * a per-attempt tuning value. */
 void RlsSetPoleAggressiveness(int32_t extraSquarings);
+int32_t RlsGetPoleAggressiveness(void);   /* returns the clamped value RlsSetPoleAggressiveness()
+                                              actually stored, for telemetry/host readback */
 
 /* Called once per normal-cascade control tick, regardless of RlsIsActive()
  * (cheap early-return when not running, so the feature costs ~nothing when

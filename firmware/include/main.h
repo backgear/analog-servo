@@ -180,6 +180,17 @@ uint32_t AppRlsGetTicksObserved(void);
 uint32_t AppRlsGetProgressSeq(void);
 void     AppRlsApply(void);
 
+/* Opt-in pole-placement tuning knob (RLS.c's RlsSetPoleAggressiveness) --
+ * reach for this when the plant's own open-loop pole estimate
+ * (autotune.rls_theta_a) sits close to 1 and the default a^2 target
+ * converges but tracks noticeably weaker than a known-good hand tune; see
+ * RLS.h's own doc comment for the full rationale and the measured sweet
+ * spot. Persists across AppRlsStart() (only RlsInit(), at boot, resets it
+ * to 0) -- a property of the plant, not a per-attempt value, so a host
+ * sets it once via `set autotune.rls_aggressiveness <n>` and leaves it. */
+void    AppRlsSetAggressiveness(int32_t extraSquarings);
+int32_t AppRlsGetAggressiveness(void);
+
 /* Built-in test-signal generator (Signal.c). Refused (no-op) while a hard
  * fault is latched; a fault that latches mid-signal stops it. */
 void       AppSignalStart(SignalType type, SignalTarget target, int32_t amplitude,

@@ -104,6 +104,8 @@ int32_t  AppRlsGetThetaBQ8(void) { return 0; }
 int64_t  AppRlsGetPTrace(void) { return 0; }
 uint32_t AppRlsGetTicksObserved(void) { return 0; }
 uint32_t AppRlsGetProgressSeq(void) { return 0; }
+void     AppRlsSetAggressiveness(int32_t extraSquarings) { (void)extraSquarings; }
+int32_t  AppRlsGetAggressiveness(void) { return 0; }
 void     AppRlsApply(void) {}
 void AppSetCommandVelocityClamp(int32_t c) { (void)c; }
 void AppSetVelocityFilterShift(int32_t c) { (void)c; }
@@ -512,7 +514,7 @@ static void test_pole_aggressiveness_raises_gain_on_near_unity_plant(void) {
    * never RlsTick()'s theta/P update, so both runs see an identical theta
    * trajectory; only the mapped Kp/Ki at each OK tick can differ. Default
    * a^2 target under-drives Kp/Ki for a pole this close to 1 -- raising
-   * sPoleAggressiveness (a^16, matching the sweet spot the sim-side sweep
+   * sPoleAggressiveness (a^64, matching the sweet spot the sim-side sweep
    * found) should produce a meaningfully LARGER last-seen Kp. */
   ControlGains gains = {0};
   gains.posGainQ8 = 16;
@@ -530,7 +532,7 @@ static void test_pole_aggressiveness_raises_gain_on_near_unity_plant(void) {
   sLcg = 12345U;   /* identical excitation sequence each sub-run */
   RlsInit();
   RlsStart(256, 1000U);
-  RlsSetPoleAggressiveness(3);   /* a^16 */
+  RlsSetPoleAggressiveness(5);   /* a^64 */
   int32_t kpAggressive = 0, kiAggressive = 0;
   TEST_ASSERT_TRUE(RunMoveCustomTrackOk(9000U, 300U, SIM_TRUE_A_WEAK, SIM_TRUE_B_WEAK, &kpAggressive,
                                          &kiAggressive));
@@ -542,7 +544,7 @@ static void test_pole_aggressiveness_clamped_to_valid_range(void) {
   /* -5 and anything past the documented max must both clamp, not just
    * silently take whatever was passed -- a candidate derived from an
    * unbounded exponent could overflow pTargetQ16's fixed-point math.
-   * Same identical-theta-trajectory reasoning as the test above: the a^32
+   * Same identical-theta-trajectory reasoning as the test above: the a^128
    * run and the "far past max" run must produce the EXACT same sequence of
    * mapped candidates, not just an equally-plausible one. */
   ControlGains gains = {0};
@@ -562,7 +564,7 @@ static void test_pole_aggressiveness_clamped_to_valid_range(void) {
   sLcg = 12345U;   /* identical excitation sequence each sub-run */
   RlsInit();
   RlsStart(256, 1000U);
-  RlsSetPoleAggressiveness(4);   /* the documented max, a^32 */
+  RlsSetPoleAggressiveness(6);   /* the documented max, a^128 */
   int32_t kpAtMax = 0;
   TEST_ASSERT_TRUE(RunMoveCustomTrackOk(9000U, 300U, SIM_TRUE_A_WEAK, SIM_TRUE_B_WEAK, &kpAtMax, &kiUnused));
 
@@ -570,7 +572,7 @@ static void test_pole_aggressiveness_clamped_to_valid_range(void) {
   sLcg = 12345U;   /* identical excitation sequence each sub-run */
   RlsInit();
   RlsStart(256, 1000U);
-  RlsSetPoleAggressiveness(9999);   /* far past the max -- must clamp to the SAME a^32 result
+  RlsSetPoleAggressiveness(9999);   /* far past the max -- must clamp to the SAME a^128 result
                                         above, not something even more aggressive */
   int32_t kpClampedHigh = 0;
   TEST_ASSERT_TRUE(

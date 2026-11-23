@@ -134,16 +134,38 @@ static int64_t ISqrt64(int64_t x) {
  * pole estimate sits close enough to 1 (a~0.99, i.e. this axis looks
  * lightly damped under the linear single-pole approximation even though
  * its real nonlinear losses are not small) that squaring it once barely
- * moves the target. A small sweep of this same plant against
- * a^2/a^4/a^8/a^16/a^32 (sPoleAggressiveness=0/1/2/3/4) found a^16
- * (aggressiveness=3) as the sweet spot: 95/100 randomized seeds converge,
- * and of those, 62/95 match or beat the known-good hand-tuned gains'
- * tracking error -- a^32 trends back down (34/95) as CascadeStable's own
- * margin starts working against overly aggressive targets instead of for
- * them. This is an empirical tuning knob, not a closed-form optimum --
- * callers with a plant whose open-loop pole estimate sits close to 1 are
- * the ones who should reach for it; it costs nothing when left at 0. */
-#define RLS_POLE_AGGRESSIVENESS_MAX  4
+ * moves the target.
+ *
+ * A full sweep of the same 100-point randomized seed-gain trial against
+ * every level from a^2 through a^1024 (sPoleAggressiveness=0..8) traces a
+ * real peak, not a plateau: convergence climbs from 26/100 (a^2) to
+ * 90-98/100 across a^8..a^64 (levels 2-5), then COLLAPSES to 27-36/100
+ * from a^128 on (CascadeStable's own margin starts working against overly
+ * aggressive targets instead of for them -- the rare survivors up there
+ * are excellent, 100% beating the known-good hand tune, but almost
+ * nothing survives to be judged). Counting "converged AND beat the known-
+ * good hand-tuned gains" as a fraction of ALL 100 starting points (not
+ * just the ones that converged) makes the peak unambiguous:
+ *
+ *   level(exponent): converged/100, beats-known-good/100
+ *   0 (a^2):    26,  0
+ *   1 (a^4):    78,  0
+ *   2 (a^8):    98, 12
+ *   3 (a^16):   97, 67
+ *   4 (a^32):   98, 77
+ *   5 (a^64):   90, 81   <- peak
+ *   6 (a^128):  36, 33
+ *   7 (a^256):  28, 28
+ *   8 (a^512):  27, 27
+ *
+ * sPoleAggressiveness=5 (a^64) is the sweet spot this module ships with as
+ * its documented recommendation (see RlsSetPoleAggressiveness() in RLS.h)
+ * -- not the max, deliberately: one level of headroom below where
+ * convergence starts falling again. This is an empirical tuning knob, not
+ * a closed-form optimum -- callers with a plant whose open-loop pole
+ * estimate sits close to 1 are the ones who should reach for it; it costs
+ * nothing when left at 0. */
+#define RLS_POLE_AGGRESSIVENESS_MAX  6
 
 /* Dead-zone thresholds: U_MIN is a static torque AMPLITUDE (a DAC/PWM code)
  * -- not a rate, tick-rate invariant, stays a literal. V_MIN looks like it
@@ -272,6 +294,7 @@ void RlsSetPoleAggressiveness(int32_t extraSquarings) {
   if (extraSquarings > RLS_POLE_AGGRESSIVENESS_MAX) extraSquarings = RLS_POLE_AGGRESSIVENESS_MAX;
   sPoleAggressiveness = extraSquarings;
 }
+int32_t RlsGetPoleAggressiveness(void) { return sPoleAggressiveness; }
 
 AutotuneResult RlsGetResult(void) { return sResult; }
 int32_t  RlsGetKpResultQ8(void) { return sKpResultQ8; }

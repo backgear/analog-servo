@@ -432,6 +432,14 @@ static void getRlsThetaA(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppRls
 static void getRlsThetaB(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppRlsGetThetaBQ8()); }
 static void getRlsPTrace(char *b, size_t n) { snprintf(b, n, "%lld", (long long)AppRlsGetPTrace()); }
 static void getRlsTicks(char *b, size_t n) { snprintf(b, n, "%lu", (unsigned long)AppRlsGetTicksObserved()); }
+static void getRlsAggressiveness(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppRlsGetAggressiveness()); }
+static int setRlsAggressiveness(const char *v) {
+  int32_t val;
+  if (ParseI32(v, &val) != 0) return -1;
+  AppRlsSetAggressiveness(val);   /* clamps internally -- see RLS.h; readback via GET confirms
+                                       the clamped value actually stored, not the raw request */
+  return 0;
+}
 
 /* Wire integers use explicit fractional bits, avoiding ambiguous Q16/Q8
  * labels: value = raw / 2^fractional_bits. Torque units are normalized command
@@ -513,6 +521,7 @@ static const var_entry_t kVars[] = {
   { "autotune.rls_theta_b",  getRlsThetaB,          NULL, Q8_META("reserved") },
   { "autotune.rls_p_trace",  getRlsPTrace,          NULL, I64_META("reserved") },
   { "autotune.rls_ticks",    getRlsTicks,           NULL, UINT_META("tick") },
+  { "autotune.rls_aggressiveness", getRlsAggressiveness, setRlsAggressiveness, INT_META("pole_squarings") },
   { "diag.tick_cycles",     getDiagTickCycles,     NULL, UINT_META("cpu_cycle") },
   { "diag.tick_cycles_max", getDiagTickCyclesMax,  NULL, UINT_META("cpu_cycle") },
   { "diag.tick_load_pct",   getDiagTickLoadPct,    NULL, INT_META("percent") },

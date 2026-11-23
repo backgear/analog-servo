@@ -165,6 +165,7 @@ static AutotuneResult sRlsResult = AUTOTUNE_RESULT_NONE;
 static int32_t  sRlsKpResult = 0, sRlsKiResult = 0, sRlsThetaA = 0, sRlsThetaB = 0;
 static int64_t  sRlsPTrace = 0;
 static uint32_t sRlsTicksObserved = 0, sRlsProgressSeq = 0;
+static int32_t  sRlsAggressiveness = 0;
 
 void AppRlsStart(int32_t lambdaQ8, uint32_t glideMs) {
   sRlsStartCalls++;
@@ -183,6 +184,15 @@ int64_t  AppRlsGetPTrace(void) { return sRlsPTrace; }
 uint32_t AppRlsGetTicksObserved(void) { return sRlsTicksObserved; }
 uint32_t AppRlsGetProgressSeq(void) { return sRlsProgressSeq; }
 void     AppRlsApply(void) { sRlsApplyCalls++; }
+void     AppRlsSetAggressiveness(int32_t extraSquarings) {
+  /* Mirrors RLS.c's own clamp (0..RLS_POLE_AGGRESSIVENESS_MAX=6) so the
+     round-trip test below exercises the same clamping behavior a real
+     device would, not just "whatever value was last stored." */
+  if (extraSquarings < 0) extraSquarings = 0;
+  if (extraSquarings > 6) extraSquarings = 6;
+  sRlsAggressiveness = extraSquarings;
+}
+int32_t  AppRlsGetAggressiveness(void) { return sRlsAggressiveness; }
 
 /* ---- Encoder.c stubs -------------------------------------------------------- */
 static int32_t sPosition = 0;
@@ -1051,6 +1061,24 @@ static void test_autotune_rls_telemetry_vars(void) {
   TEST_ASSERT_NOT_NULL(strstr(cap, "autotune.rls_ticks=777"));
 }
 
+static void test_autotune_rls_aggressiveness_round_trips(void) {
+  capReset(); run("get autotune.rls_aggressiveness");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "autotune.rls_aggressiveness=0"));   /* default */
+
+  capReset(); run("set autotune.rls_aggressiveness 5");
+  capReset(); run("get autotune.rls_aggressiveness");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "autotune.rls_aggressiveness=5"));
+}
+
+static void test_autotune_rls_aggressiveness_clamps_out_of_range(void) {
+  /* Mirrors RLS.c's own RlsSetPoleAggressiveness() clamp -- see this
+     file's AppRlsSetAggressiveness() stub, which copies that same bound
+     so this test exercises the real clamping behavior, not just storage. */
+  capReset(); run("set autotune.rls_aggressiveness 9999");
+  capReset(); run("get autotune.rls_aggressiveness");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "autotune.rls_aggressiveness=6"));
+}
+
 static void test_rls_progress_prints_on_new_seq(void) {
   sRlsActive = 1;
   sRlsProgressSeq = 1;
@@ -1454,6 +1482,8 @@ int main(void) {
   RUN_TEST(test_autotune_method_and_result_report_rls_while_active);
   RUN_TEST(test_autotune_method_falls_back_to_relay_once_rls_idle_with_no_result);
   RUN_TEST(test_autotune_rls_telemetry_vars);
+  RUN_TEST(test_autotune_rls_aggressiveness_round_trips);
+  RUN_TEST(test_autotune_rls_aggressiveness_clamps_out_of_range);
   RUN_TEST(test_rls_progress_prints_on_new_seq);
   RUN_TEST(test_rls_progress_not_reprinted_for_same_seq);
   RUN_TEST(test_rls_progress_not_printed_when_idle);
