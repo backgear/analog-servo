@@ -7,10 +7,15 @@ are representative, not measurements or recommended hardware tuning.
 
 ## Run
 
-Requires a host C compiler, Python 3 with matplotlib, and a simmy source checkout.
-No changes or builds inside the simmy checkout are necessary.
+Requires a host C compiler, Python 3 with matplotlib, and the published
+[`backgear/simmy`](https://github.com/backgear/simmy) Git dependency.
+No changes or builds inside the simmy checkout are necessary. CI pins the
+revision below; use the same revision locally to reproduce its results.
+The test model stays in this repository at `tools/simmy/two_mass.json`.
 
 ```sh
+git clone https://github.com/backgear/simmy.git ~/simmy
+git -C ~/simmy checkout f9ead095e0646f3c991b71e59adc547360b82f5b
 python3 -m pip install matplotlib  # preferably in your plotting virtualenv
 python3 tools/simmy_plot.py --simmy-dir ~/simmy
 # Or use the optional PlatformIO native custom target:
@@ -107,8 +112,10 @@ separate stop/low-speed control experiment, not concealing it with plot filters.
 
 Tests: `python3 -m unittest discover -s tools -p 'test_simmy*.py'` and
 `python3 -m unittest discover -s tools -p test_plot_telemetry.py`.
-External-checkout integration tests skip explicitly if simmy is unavailable;
-metric and renderer tests still run independently (renderer needs matplotlib).
+Integration tests **fail** if Simmy is missing or incomplete and print the
+clone command and `SIMMY_DIR` override. They never silently skip. Metric and
+renderer tests can still run independently (renderer needs matplotlib).
+CI checks out the pinned published dependency and runs all host tests.
 
 ## Stopping investigation (experimental, partial improvement)
 

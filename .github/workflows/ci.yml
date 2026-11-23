@@ -55,12 +55,22 @@ jobs:
     runs-on: ubuntu-latest
     env:
       MPLBACKEND: Agg
+      SIMMY_DIR: ${{ github.workspace }}/external/simmy
     steps:
       - uses: actions/checkout@v4
+      - name: Check out published Simmy
+        uses: actions/checkout@v4
+        with:
+          repository: backgear/simmy
+          ref: f9ead095e0646f3c991b71e59adc547360b82f5b
+          path: external/simmy
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Install host test dependencies
         run: pip install numpy scipy matplotlib pyserial
-      - name: Run host-tool tests
+      - name: Require Simmy integration dependency
+        run: test -f "$SIMMY_DIR/include/simmy.h"
+      - name: Run host-tool and simulation tests
         run: python -m unittest discover -s tools -p 'test_*.py' -v

@@ -10,12 +10,17 @@ import sys
 import tempfile
 import unittest
 
+from simmy_plot import require_simmy
+
 ROOT = Path(__file__).resolve().parent.parent
 SIMMY = Path(os.environ.get('SIMMY_DIR', '~/simmy')).expanduser()
 
 
-@unittest.skipUnless((SIMMY / 'include/simmy.h').is_file(), 'external simmy checkout not found')
 class SimmyPlotTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        require_simmy(SIMMY)
+
     def run_simulation(self, out, *extra):
         subprocess.run([sys.executable, str(ROOT / 'tools/simmy_plot.py'),
                         '--simmy-dir', str(SIMMY), '--out-dir', str(out),

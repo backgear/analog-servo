@@ -7,12 +7,17 @@ import sys
 import tempfile
 import unittest
 
+from simmy_plot import require_simmy
+
 ROOT = Path(__file__).resolve().parent.parent
 SIMMY = Path(os.environ.get('SIMMY_DIR', '~/simmy')).expanduser()
 
 
-@unittest.skipUnless((SIMMY / 'include/simmy.h').is_file(), 'external simmy checkout not found')
 class ReportTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        require_simmy(SIMMY)
+
     def test_nine_case_report_and_provenance_without_plot_dependencies(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)

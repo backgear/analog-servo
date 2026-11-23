@@ -25,11 +25,35 @@ TUNES = {
 }
 
 
+SIMMY_REF = 'f9ead095e0646f3c991b71e59adc547360b82f5b'
+SIMMY_SOURCES = ('simmy.c', 'simmy_induction.c', 'simmy_bldc.c',
+                 'simmy_config.c', 'simmy_json.c')
+
+
+def require_simmy(simmy):
+    """Fail rather than silently skip integration tests without the dependency."""
+    required = [simmy / 'include/simmy.h', simmy / 'include/simmy_bldc.h',
+                simmy / 'src/simmy_json.h']
+    required += [simmy / 'src' / name for name in SIMMY_SOURCES]
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(
+            'Simmy checkout is missing or incomplete: ' + ', '.join(missing) + '\n'
+            'Fetch the published dependency before running host tests:\n'
+            '  git clone https://github.com/backgear/simmy.git ~/simmy\n'
+            f'  git -C ~/simmy checkout {SIMMY_REF}\n'
+            'Or set SIMMY_DIR=/path/to/simmy for an existing checkout.\n'
+            'The test model stays in analog-servo/tools/simmy/two_mass.json.')
+
+
 def build_driver(build_dir, simmy):
     """Compile once for a batch; never reuse external prebuilt archives."""
+    require_simmy(simmy)
     sources = [ROOT / 'firmware/test/support/simmy_plot_main.c',
                ROOT / 'firmware/src/Control.c']
-    sources += [simmy / 'src' / name for name in ('simmy.c', 'simmy_config.c', 'simmy_json.c')]
+    # Match the published library's source list: config parsing also validates
+    # induction and electrical-model parameters, even for a mechanical plant.
+    sources += [simmy / 'src' / name for name in SIMMY_SOURCES]
     for path in [simmy / 'include/simmy.h', *sources]:
         if not path.is_file():
             raise FileNotFoundError(f'missing {path}; set --simmy-dir or SIMMY_DIR')
