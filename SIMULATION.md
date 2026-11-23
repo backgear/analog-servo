@@ -174,6 +174,15 @@ On the default unchanged plant, with encoder-delta feedback:
 | Motion-only motor error RMS | 11.0 counts | 10.7 counts |
 | Motion-only load error RMS | 19.6 counts | 19.9 counts |
 
+These are recorded synthetic results, not portable timing guarantees.
+Floating-point evaluation changes when the plant crosses an integer encoder
+edge; the changed feedback can then alter the stiction trajectory. For example,
+the same sources and model with GCC's x87 evaluation settle the final motor in
+0.418 s rather than 0.076 s. Tests require settling within the recorded hold
+(with the unchanged ±5-count / ±1-count-per-tick bands and 250 ms minimum dwell),
+lower tail torque ripple, pulse-only scheduling, and retained controller state;
+they do not require the table's settling times on every host.
+
 This is a **partial improvement, not a robust stopping fix**. At 1000 counts/s,
 the candidate's final motor error remains 6 counts and fails the unchanged
 ±5-count settling criterion. Disabling friction exposes severe moving-loop
