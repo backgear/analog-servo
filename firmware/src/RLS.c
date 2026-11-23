@@ -64,21 +64,86 @@ static int64_t ISqrt64(int64_t x) {
  * guess, not a measured value. */
 #define RLS_B_MAX_REF_HZ       1000U
 #define RLS_B_MAX_AT_REF_Q8    64     /* ~0.25 @ 1kHz -- placeholder, bench-TBD */
-#define RLS_B_MIN_Q16          (RLS_SCALE / RLS_Q8_SCALE)  /* ~0.0039 -- numerical divide-by-zero
-                                         guard AND outer sanity floor in one: after polarity
-                                         correction b should be meaningfully positive, so
-                                         anything this close to zero is untrustworthy either way */
 
-/* Target closed-loop pole for proportional pole placement, p_target = a^2
- * -- relative to the just-measured open-loop pole `a` itself, NOT an
- * absolute time constant. An absolute target (e.g. a fixed tau in ms)
- * would need to be faster than whatever the real, unknown-in-advance plant
- * turns out to be, or Kp = (a - p_target)/b comes out negative and every
- * candidate gets rejected -- exactly backwards for "start from nothing."
- * Since 0 < a < 1 for any plant this clamp range accepts, a^2 < a always,
- * guaranteeing a faster (tighter) closed-loop pole than open-loop by
- * construction, with no absolute units and no tickHz dependence needed at
- * all here -- `a` is already tick-rate-correct by the time this runs. */
+/* b's lower bound used to be one constant (RLS_SCALE/RLS_Q8_SCALE, ~0.0039)
+ * doing two different jobs: a numerical divide-by-zero guard, AND an "outer
+ * sanity floor" rejecting b as untrustworthy below that line. Those jobs
+ * turn out to need different sizes. Found against a real, frozen, already-
+ * hardware-validated empirical axis model (sm232ae_tq10_command_v2, see
+ * simmy's examples/rls_axis_command_v2/) whose real torque-command ->
+ * velocity-step gain, in these exact raw-command/raw-count/1kHz units, is
+ * ~0.00026 -- genuinely small, cleanly and repeatably estimated (theta_a
+ * converges tightly too), but ~15x BELOW the old combined floor. That
+ * plant is not noise or "no information": RlsGetTicksObserved() reaches
+ * into the thousands and theta_b is stable from one run to the next. The
+ * old floor rejected it on every single trial of a 100-point randomized
+ * seed-gain sweep, regardless of starting Kp/Ki -- b, not the seed, was
+ * the actual blocker. A weak/low-current/low-torque-constant motor is a
+ * real category of hardware this module has to support, not an edge case
+ * to floor away.
+ *
+ * So: RLS_B_MIN_Q16 now does ONLY the numerical job (keep the division in
+ * MapThetaToGains() a safe divide-by-something-nonzero), sized tiny enough
+ * to let a genuinely weak plant's b through. The "is this candidate sane"
+ * job that used to lean on b's absolute size moves to where it actually
+ * belongs -- RLS_GAIN_MAX_Q16 below, bounding the RESULTING Kp/Ki instead
+ * of using b as a proxy for them. b near this tiny floor produces a huge
+ * Kp=(a-q)/b precisely when there's nothing reliable to divide by (e.g.
+ * u varies while v never responds at all -- see
+ * test_bad_measurement_rejected_not_silently_applied) -- that candidate is
+ * still correctly rejected, now by the gain ceiling actually seeing how
+ * large it is, not by a blanket floor on b that also catches real small-
+ * but-legitimate plants. */
+#define RLS_B_MIN_Q16          1
+
+/* Replaces the old RLS_B_MIN_Q16's "outer sanity" half (see above): rejects
+ * a candidate whose Kp or Ki would be absurd to apply, regardless of why
+ * (degenerate b, noise, or any other cause) -- the actual quantity that
+ * matters for safety, not a proxy for it. Generous, bench-TBD placeholder
+ * in the same spirit as RLS_B_MAX_AT_REF_Q8: comfortably above every real
+ * gain this module has produced so far (a plant needing a weak-authority
+ * Kp of several hundred, Q8.8 ~100000+, still passes with wide margin),
+ * comfortably below what a genuinely-zero-information b produces (that
+ * case divides by RLS_B_MIN_Q16 itself and overshoots this ceiling by
+ * several orders of magnitude). Real units (Kp/Ki, same scale as
+ * velGainKpQ8/velGainKiQ8's Q8.8 "1.0 = 256"). */
+#define RLS_GAIN_MAX_Q16       (2000LL * RLS_SCALE)
+
+/* Target closed-loop pole for proportional pole placement, p_target =
+ * a^(2*(1+sPoleAggressiveness)) -- relative to the just-measured open-loop
+ * pole `a` itself, NOT an absolute time constant. An absolute target (e.g.
+ * a fixed tau in ms) would need to be faster than whatever the real,
+ * unknown-in-advance plant turns out to be, or Kp = (a - p_target)/b comes
+ * out negative and every candidate gets rejected -- exactly backwards for
+ * "start from nothing." Since 0 < a < 1 for any plant this clamp range
+ * accepts, a^N < a for any N>1 always, guaranteeing a faster (tighter)
+ * closed-loop pole than open-loop by construction, with no absolute units
+ * and no tickHz dependence needed at all here -- `a` is already
+ * tick-rate-correct by the time this runs.
+ *
+ * sPoleAggressiveness=0 (the default, RlsSetPoleAggressiveness() never
+ * called) reproduces the exact a^2 behavior every existing caller/test
+ * already depends on -- see RlsSetPoleAggressiveness() in RLS.h for why a
+ * caller would ever raise it. Found, on the same weak sm232ae_tq10 plant
+ * above: with b fixed (previous paragraph) but p_target left at the plain
+ * a^2 default, RLS DOES converge, but to a Kp/Ki far weaker than a
+ * hand-tuned PC grid search already found for the exact same plant/gains
+ * (e.g. Kp candidates ~30-50 vs. a known-good ~250) -- a^2 is a
+ * deliberately TIMID target (RLS.h: "no termination proof... a physical
+ * clamp... stand in as the safety net"), and this plant's own open-loop
+ * pole estimate sits close enough to 1 (a~0.99, i.e. this axis looks
+ * lightly damped under the linear single-pole approximation even though
+ * its real nonlinear losses are not small) that squaring it once barely
+ * moves the target. A small sweep of this same plant against
+ * a^2/a^4/a^8/a^16/a^32 (sPoleAggressiveness=0/1/2/3/4) found a^16
+ * (aggressiveness=3) as the sweet spot: 95/100 randomized seeds converge,
+ * and of those, 62/95 match or beat the known-good hand-tuned gains'
+ * tracking error -- a^32 trends back down (34/95) as CascadeStable's own
+ * margin starts working against overly aggressive targets instead of for
+ * them. This is an empirical tuning knob, not a closed-form optimum --
+ * callers with a plant whose open-loop pole estimate sits close to 1 are
+ * the ones who should reach for it; it costs nothing when left at 0. */
+#define RLS_POLE_AGGRESSIVENESS_MAX  4
 
 /* Dead-zone thresholds: U_MIN is a static torque AMPLITUDE (a DAC/PWM code)
  * -- not a rate, tick-rate invariant, stays a literal. V_MIN looks like it
@@ -118,6 +183,7 @@ static int32_t sKpResultQ8, sKiResultQ8;
 static uint32_t sTicksObserved;
 static uint32_t sProgressSeq;
 static uint32_t sDitherState;
+static int32_t sPoleAggressiveness;
 
 /* ~5% of torqueClampMax, Q8.8 (13/256=0.0508) -- see RLS.h's "Torque
  * dither" section. Empirically, as little as 1% already fully corrects the
@@ -153,6 +219,7 @@ void RlsInit(void) {
   sP12Q16 = 0;
   sLambdaQ16 = RLS_SCALE;
   sBMaxQ16 = 0;
+  sPoleAggressiveness = 0;
   sProgressIntervalTicks = sProgressCountdown = 0U;
   sVPrev = sUPrev = 0;
   sHavePrev = 0;
@@ -199,6 +266,13 @@ void RlsStart(int32_t lambdaQ8, uint32_t tickHz) {
 
 void RlsStop(void) { sRunning = 0; }
 int  RlsIsActive(void) { return sRunning; }
+
+void RlsSetPoleAggressiveness(int32_t extraSquarings) {
+  if (extraSquarings < 0) extraSquarings = 0;
+  if (extraSquarings > RLS_POLE_AGGRESSIVENESS_MAX) extraSquarings = RLS_POLE_AGGRESSIVENESS_MAX;
+  sPoleAggressiveness = extraSquarings;
+}
+
 AutotuneResult RlsGetResult(void) { return sResult; }
 int32_t  RlsGetKpResultQ8(void) { return sKpResultQ8; }
 int32_t  RlsGetKiResultQ8(void) { return sKiResultQ8; }
@@ -294,15 +368,19 @@ static int CascadeStable(int64_t aQ16, int64_t qQ16) {
   return lhs < rhs;
 }
 
-/* Proportional pole placement: Kp = (a - p_target)/b, p_target = a^2 (see
- * the file comment above MapThetaToGains's p_target definition for why
- * it's relative, not absolute). Ki from a tempered rule analogous to
- * relay's Ki = Kp/Ti (see Autotune.c), using (1 - p_target) as the Ti
- * factor. Guards |b| against RLS_B_MIN_Q16 before dividing -- skips the
- * recompute (candidate stays stale) rather than ever dividing by something
- * too close to zero to trust. Returns 0 and leaves kpQ8/kiQ8 untouched if
- * any guard trips or either theta is out of its clamp range (caller is
- * responsible for then reporting BAD_MEASUREMENT). */
+/* Proportional pole placement: Kp = (a - p_target)/b, p_target =
+ * a^(2*(1+sPoleAggressiveness)) (see the file comment above
+ * RLS_POLE_AGGRESSIVENESS_MAX for why it's relative, not absolute, and why
+ * it's raised past a^2 only when a caller opts in). Ki from a tempered
+ * rule analogous to relay's Ki = Kp/Ti (see Autotune.c), using
+ * (1 - p_target) as the Ti factor. Guards |b| against RLS_B_MIN_Q16 before
+ * dividing -- a purely numerical guard now, see RLS_B_MIN_Q16's own
+ * comment -- then bounds the RESULTING Kp/Ki against RLS_GAIN_MAX_Q16,
+ * which is where the actual "is this candidate sane" judgment now lives.
+ * Skips the recompute (candidate stays stale) rather than ever dividing by
+ * something too close to zero to trust. Returns 0 and leaves kpQ8/kiQ8
+ * untouched if any guard trips or either theta is out of its clamp range
+ * (caller is responsible for then reporting BAD_MEASUREMENT). */
 static int MapThetaToGains(int32_t *kpQ8, int32_t *kiQ8) {
   if (sThetaAQ16 <= 0 || sThetaAQ16 > RLS_THETA_A_MAX_Q16) return 0;   /* a<=0: not enough
                                          information yet to place a pole against, not a clamp
@@ -311,15 +389,20 @@ static int MapThetaToGains(int32_t *kpQ8, int32_t *kiQ8) {
   if (sThetaBQ16 < RLS_B_MIN_Q16 || sThetaBQ16 > sBMaxQ16) return 0;
 
   int64_t pTargetQ16 = (sThetaAQ16 * sThetaAQ16) / RLS_SCALE;   /* a^2, Q16.16 */
+  for (int32_t i = 0; i < sPoleAggressiveness; i++) {
+    pTargetQ16 = (pTargetQ16 * pTargetQ16) / RLS_SCALE;   /* square again: a^4, a^8, a^16, a^32 */
+  }
   if (!CascadeStable(sThetaAQ16, pTargetQ16)) return 0;   /* see CascadeStable()'s comment --
                                                                depends only on a and posGainQ8,
                                                                checked before touching b at all */
-  int64_t numQ16 = sThetaAQ16 - pTargetQ16;           /* a - a^2 = a*(1-a), Q16.16, > 0 here */
+  int64_t numQ16 = sThetaAQ16 - pTargetQ16;           /* a - p_target, Q16.16, > 0 here */
   int64_t kpQ16 = (numQ16 * RLS_SCALE) / sThetaBQ16;  /* (a - p_target)/b, Q16.16 */
-  if (kpQ16 <= 0) return 0;                            /* non-physical candidate -- reject */
+  if (kpQ16 <= 0 || kpQ16 > RLS_GAIN_MAX_Q16) return 0;   /* non-physical, or too large to trust --
+                                                              see RLS_GAIN_MAX_Q16's own comment */
 
-  int64_t tiFactorQ16 = RLS_SCALE - pTargetQ16;        /* 1 - a^2, Q16.16, always in (0,1] here */
+  int64_t tiFactorQ16 = RLS_SCALE - pTargetQ16;        /* 1 - p_target, Q16.16, always in (0,1] here */
   int64_t kiQ16 = (kpQ16 * tiFactorQ16) / RLS_SCALE;
+  if (kiQ16 > RLS_GAIN_MAX_Q16) return 0;
 
   int32_t kp = Q16ToQ8Round(kpQ16);
   int32_t ki = Q16ToQ8Round(kiQ16);

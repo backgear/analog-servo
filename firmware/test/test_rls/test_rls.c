@@ -430,6 +430,176 @@ static void test_posgain_change_takes_effect_live(void) {
   TEST_ASSERT_EQUAL_INT(AUTOTUNE_RESULT_OK, RlsGetResult());
 }
 
+/* ---- Weak-authority plants and RlsSetPoleAggressiveness() ----
+ *
+ * Found against a real, frozen, already-hardware-validated empirical axis
+ * model (simmy's models/axis/sm232ae_tq10_command_v2.json, driven through
+ * examples/rls_axis_command_v2/ there): its real torque-command -> velocity
+ * -step gain, in these exact raw-command/raw-count/1kHz units, is ~0.00026
+ * -- genuinely small and cleanly, repeatably estimated (not noise), but
+ * ~15x below the OLD combined RLS_B_MIN_Q16 (~0.0039), which rejected it
+ * as BAD_MEASUREMENT on every single trial of a 100-point randomized
+ * seed-gain sweep. SIM_TRUE_B_WEAK below is that same real value; this
+ * section is the regression coverage for the two-part fix (RLS_B_MIN_Q16
+ * now a tiny numerical-only guard, RLS_GAIN_MAX_Q16 doing the actual
+ * sanity check on the RESULTING Kp/Ki) and for the new
+ * RlsSetPoleAggressiveness() knob the same investigation needed to get a
+ * USEFUL (not just technically OK) candidate out of a plant whose
+ * open-loop pole estimate sits this close to 1. */
+#define SIM_TRUE_A_WEAK  0.99
+#define SIM_TRUE_B_WEAK  0.00026   /* ~15x below the OLD RLS_B_MIN_Q16 floor */
+
+static void SimStepCustom(int32_t u, double a, double b) {
+  RlsTick(u, sSimV);
+  double vNext = a * (double)sSimV + b * (double)u;
+  sSimV = (int32_t)(vNext >= 0.0 ? vNext + 0.5 : vNext - 0.5);
+}
+
+/* Like RunMove above, but for a caller-chosen (a, b), and tracking the
+ * most recent AUTOTUNE_RESULT_OK candidate across the whole run instead of
+ * only checking the very last tick. This weak-b plant's theta_b estimate
+ * genuinely flickers tick-to-tick around the small true value (same
+ * flickering observed against the real empirical model this is modeling
+ * -- see the file comment above) -- a real property of this plant/
+ * estimator combination, not a test artifact, and already how a host
+ * polling status would see it: "has a good candidate shown up at all,"
+ * not "is this exact instant OK." Returns 1 if OK was seen at least once. */
+static int RunMoveCustomTrackOk(uint32_t numTicks, uint32_t holdTicks, double a, double b,
+                                 int32_t *kpOut, int32_t *kiOut) {
+  int sawOk = 0;
+  int32_t u = 0;
+  for (uint32_t t = 0; t < numTicks; t++) {
+    if (t % holdTicks == 0U) u = RandRange(-6000, 6000);
+    SimStepCustom(u, a, b);
+    if (RlsGetResult() == AUTOTUNE_RESULT_OK) {
+      sawOk = 1;
+      *kpOut = RlsGetKpResultQ8();
+      *kiOut = RlsGetKiResultQ8();
+    }
+  }
+  return sawOk;
+}
+
+static void test_weak_plant_converges_at_default_aggressiveness(void) {
+  /* The actual regression test for the RLS_B_MIN_Q16 fix: this plant's b
+   * is far below the OLD floor. Gentle posGainQ8=16, same reason as
+   * test_accepts_cascade_stable_candidate_at_lower_posgain -- a=0.99 is
+   * even closer to 1 than that test's a=0.90, so CascadeStable needs the
+   * same gentle position gain to pass. Default aggressiveness (never
+   * called) -- this alone is enough to converge, just not enough to
+   * produce a punchy candidate (see the next test). Longer hold (300
+   * ticks, comfortably past this plant's own ~100-tick time constant) than
+   * the strong-plant tests above -- this weak a b needs the velocity to
+   * actually approach steady-state under a held command before the
+   * regression has a clean signal to work with. */
+  ControlGains gains = {0};
+  gains.posGainQ8 = 16;
+  ControlSetGains(&gains);
+
+  SimReset();
+  RlsStart(256, 1000U);
+  int32_t kp = 0, ki = 0;
+  int sawOk = RunMoveCustomTrackOk(9000U, 300U, SIM_TRUE_A_WEAK, SIM_TRUE_B_WEAK, &kp, &ki);
+
+  TEST_ASSERT_TRUE(sawOk);
+  TEST_ASSERT_TRUE(kp > 0);
+  TEST_ASSERT_TRUE(ki > 0);
+}
+
+static void test_pole_aggressiveness_raises_gain_on_near_unity_plant(void) {
+  /* Same weak plant as above, same excitation, same deterministic seed --
+   * sPoleAggressiveness only changes MapThetaToGains()'s OUTPUT mapping,
+   * never RlsTick()'s theta/P update, so both runs see an identical theta
+   * trajectory; only the mapped Kp/Ki at each OK tick can differ. Default
+   * a^2 target under-drives Kp/Ki for a pole this close to 1 -- raising
+   * sPoleAggressiveness (a^16, matching the sweet spot the sim-side sweep
+   * found) should produce a meaningfully LARGER last-seen Kp. */
+  ControlGains gains = {0};
+  gains.posGainQ8 = 16;
+  ControlSetGains(&gains);
+
+  SimReset();
+  sLcg = 12345U;   /* identical excitation sequence each sub-run */
+  RlsInit();
+  RlsStart(256, 1000U);
+  int32_t kpDefault = 0, kiDefault = 0;
+  TEST_ASSERT_TRUE(
+      RunMoveCustomTrackOk(9000U, 300U, SIM_TRUE_A_WEAK, SIM_TRUE_B_WEAK, &kpDefault, &kiDefault));
+
+  SimReset();
+  sLcg = 12345U;   /* identical excitation sequence each sub-run */
+  RlsInit();
+  RlsStart(256, 1000U);
+  RlsSetPoleAggressiveness(3);   /* a^16 */
+  int32_t kpAggressive = 0, kiAggressive = 0;
+  TEST_ASSERT_TRUE(RunMoveCustomTrackOk(9000U, 300U, SIM_TRUE_A_WEAK, SIM_TRUE_B_WEAK, &kpAggressive,
+                                         &kiAggressive));
+
+  TEST_ASSERT_TRUE(kpAggressive > kpDefault);
+}
+
+static void test_pole_aggressiveness_clamped_to_valid_range(void) {
+  /* -5 and anything past the documented max must both clamp, not just
+   * silently take whatever was passed -- a candidate derived from an
+   * unbounded exponent could overflow pTargetQ16's fixed-point math.
+   * Same identical-theta-trajectory reasoning as the test above: the a^32
+   * run and the "far past max" run must produce the EXACT same sequence of
+   * mapped candidates, not just an equally-plausible one. */
+  ControlGains gains = {0};
+  gains.posGainQ8 = 16;
+  ControlSetGains(&gains);
+
+  SimReset();
+  sLcg = 12345U;   /* identical excitation sequence each sub-run */
+  RlsInit();
+  RlsStart(256, 1000U);
+  RlsSetPoleAggressiveness(-5);   /* clamps to 0 */
+  int32_t kpClampedLow = 0, kiUnused = 0;
+  TEST_ASSERT_TRUE(
+      RunMoveCustomTrackOk(9000U, 300U, SIM_TRUE_A_WEAK, SIM_TRUE_B_WEAK, &kpClampedLow, &kiUnused));
+
+  SimReset();
+  sLcg = 12345U;   /* identical excitation sequence each sub-run */
+  RlsInit();
+  RlsStart(256, 1000U);
+  RlsSetPoleAggressiveness(4);   /* the documented max, a^32 */
+  int32_t kpAtMax = 0;
+  TEST_ASSERT_TRUE(RunMoveCustomTrackOk(9000U, 300U, SIM_TRUE_A_WEAK, SIM_TRUE_B_WEAK, &kpAtMax, &kiUnused));
+
+  SimReset();
+  sLcg = 12345U;   /* identical excitation sequence each sub-run */
+  RlsInit();
+  RlsStart(256, 1000U);
+  RlsSetPoleAggressiveness(9999);   /* far past the max -- must clamp to the SAME a^32 result
+                                        above, not something even more aggressive */
+  int32_t kpClampedHigh = 0;
+  TEST_ASSERT_TRUE(
+      RunMoveCustomTrackOk(9000U, 300U, SIM_TRUE_A_WEAK, SIM_TRUE_B_WEAK, &kpClampedHigh, &kiUnused));
+
+  TEST_ASSERT_TRUE(kpAtMax > kpClampedLow);   /* sanity: max really is more aggressive than 0 */
+  TEST_ASSERT_EQUAL_INT32(kpAtMax, kpClampedHigh);
+}
+
+static void test_near_zero_b_still_rejected_by_gain_ceiling(void) {
+  /* Same scenario as test_bad_measurement_rejected_not_silently_applied
+   * (u varies, v pinned at exactly 0 -- no information relating torque to
+   * any velocity response at all), but documenting WHICH guard now catches
+   * it: RLS_B_MIN_Q16 is a tiny numerical-only floor now (see RLS.c), so
+   * theta_b sitting near it is no longer, by itself, a rejection -- the
+   * candidate still gets caught because the Kp/Ki a near-zero b would
+   * produce exceeds RLS_GAIN_MAX_Q16. Confirms the fix moved the "is this
+   * sane" judgment to the right place instead of accidentally deleting
+   * it. */
+  RlsStart(256, 1000U);
+  for (int i = 0; i < 200; i++) {
+    RlsTick(RandRange(-6000, 6000), 0);
+  }
+  TEST_ASSERT_EQUAL_INT(AUTOTUNE_RESULT_BAD_MEASUREMENT, RlsGetResult());
+  TEST_ASSERT_EQUAL_INT32(0, RlsGetThetaBQ8());   /* b itself did settle near zero, as expected --
+                                                       just no longer the thing doing the
+                                                       rejecting */
+}
+
 /* ---- GainGlide ---- */
 
 static ControlGains MakeGains(int32_t pos, int32_t kp, int32_t ki) {
@@ -497,6 +667,10 @@ int main(void) {
   RUN_TEST(test_rejects_cascade_unstable_candidate);
   RUN_TEST(test_accepts_cascade_stable_candidate_at_lower_posgain);
   RUN_TEST(test_posgain_change_takes_effect_live);
+  RUN_TEST(test_weak_plant_converges_at_default_aggressiveness);
+  RUN_TEST(test_pole_aggressiveness_raises_gain_on_near_unity_plant);
+  RUN_TEST(test_pole_aggressiveness_clamped_to_valid_range);
+  RUN_TEST(test_near_zero_b_still_rejected_by_gain_ceiling);
   RUN_TEST(test_glide_reaches_target_exactly_at_total_ticks);
   RUN_TEST(test_glide_is_monotonic_between_endpoints);
   RUN_TEST(test_glide_inactive_is_a_noop);
