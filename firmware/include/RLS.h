@@ -129,6 +129,25 @@ void RlsSetPoleAggressiveness(int32_t extraSquarings);
 int32_t RlsGetPoleAggressiveness(void);   /* returns the clamped value RlsSetPoleAggressiveness()
                                               actually stored, for telemetry/host readback */
 
+/* Sweep-only setters for RLS.c's other "generous, bench-TBD placeholder"
+ * defaults (RLS_B_MAX_AT_REF_Q8, RLS_GAIN_MAX_Q16, RLS_U_MIN/RLS_V_MIN,
+ * RLS_DITHER_PCT_Q8 -- see RLS.c's file comment above each). Same lifecycle
+ * as RlsSetPoleAggressiveness: persists across RlsStart(), only RlsInit()
+ * resets it to the shipped default. No input clamping -- a degenerate value
+ * just produces degenerate (always-reject/always-accept) behavior, exactly
+ * as editing the #define directly would. Added to let a sweep check each
+ * default the same way the pole-aggressiveness default got checked -- not
+ * yet exposed to Protocol.c/the host CLI; promote the ones a sweep actually
+ * finds wrong, the same way pole-aggressiveness was. */
+void RlsSetBMaxAtRefQ8(int32_t bMaxAtRefQ8);
+int32_t RlsGetBMaxAtRefQ8(void);
+void RlsSetGainMaxQ16(int64_t gainMaxQ16);
+int64_t RlsGetGainMaxQ16(void);
+void RlsSetDeadzone(int32_t uMin, int32_t vMin);
+void RlsGetDeadzone(int32_t *uMin, int32_t *vMin);
+void RlsSetDitherPctQ8(int32_t ditherPctQ8);
+int32_t RlsGetDitherPctQ8(void);
+
 /* Called once per normal-cascade control tick, regardless of RlsIsActive()
  * (cheap early-return when not running, so the feature costs ~nothing when
  * unused) -- torqueCommand/velocityActual are this tick's already-polarity-

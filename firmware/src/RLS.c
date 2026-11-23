@@ -206,6 +206,14 @@ static uint32_t sTicksObserved;
 static uint32_t sProgressSeq;
 static uint32_t sDitherState;
 static int32_t sPoleAggressiveness;
+/* Runtime-settable mirrors of RLS_B_MAX_AT_REF_Q8/RLS_GAIN_MAX_Q16/RLS_U_MIN/
+ * RLS_V_MIN/RLS_DITHER_PCT_Q8 below -- same lifecycle as sPoleAggressiveness
+ * (a property of the plant the caller already knows about, persists across
+ * RlsStart(), only RlsInit() resets it to the shipped default). Exists so a
+ * sweep can check whether each "generous, bench-TBD placeholder" default
+ * actually holds up, the same way the pole-aggressiveness default didn't. */
+static int32_t sBMaxAtRefQ8, sUMin, sVMin, sDitherPctQ8;
+static int64_t sGainMaxQ16;
 
 /* ~5% of torqueClampMax, Q8.8 (13/256=0.0508) -- see RLS.h's "Torque
  * dither" section. Empirically, as little as 1% already fully corrects the
@@ -242,6 +250,11 @@ void RlsInit(void) {
   sLambdaQ16 = RLS_SCALE;
   sBMaxQ16 = 0;
   sPoleAggressiveness = 0;
+  sBMaxAtRefQ8 = RLS_B_MAX_AT_REF_Q8;
+  sGainMaxQ16 = RLS_GAIN_MAX_Q16;
+  sUMin = RLS_U_MIN;
+  sVMin = RLS_V_MIN;
+  sDitherPctQ8 = RLS_DITHER_PCT_Q8;
   sProgressIntervalTicks = sProgressCountdown = 0U;
   sVPrev = sUPrev = 0;
   sHavePrev = 0;
@@ -272,7 +285,7 @@ void RlsStart(int32_t lambdaQ8, uint32_t tickHz) {
    * (refHz/tickHz)^2 -- see the file-comment derivation above. */
   int64_t ratioQ16 = ((int64_t)RLS_B_MAX_REF_HZ * RLS_SCALE) / (int64_t)tickHz;
   int64_t ratioSqQ16 = (ratioQ16 * ratioQ16) / RLS_SCALE;
-  sBMaxQ16 = (Q8ToQ16(RLS_B_MAX_AT_REF_Q8) * ratioSqQ16) / RLS_SCALE;
+  sBMaxQ16 = (Q8ToQ16(sBMaxAtRefQ8) * ratioSqQ16) / RLS_SCALE;
 
   sProgressIntervalTicks = ((uint64_t)RLS_PROGRESS_INTERVAL_MS * tickHz) / 1000U;
   if (sProgressIntervalTicks == 0U) sProgressIntervalTicks = 1U;
@@ -296,6 +309,19 @@ void RlsSetPoleAggressiveness(int32_t extraSquarings) {
 }
 int32_t RlsGetPoleAggressiveness(void) { return sPoleAggressiveness; }
 
+/* Sweep-only setters -- see sBMaxAtRefQ8/sGainMaxQ16/sUMin/sVMin/sDitherPctQ8
+ * above. No clamping beyond what the type/sign already implies: a caller
+ * passing something degenerate gets degenerate (always-reject or always-
+ * accept) behavior, same as directly editing the #define would. */
+void RlsSetBMaxAtRefQ8(int32_t bMaxAtRefQ8) { sBMaxAtRefQ8 = bMaxAtRefQ8; }
+int32_t RlsGetBMaxAtRefQ8(void) { return sBMaxAtRefQ8; }
+void RlsSetGainMaxQ16(int64_t gainMaxQ16) { sGainMaxQ16 = gainMaxQ16; }
+int64_t RlsGetGainMaxQ16(void) { return sGainMaxQ16; }
+void RlsSetDeadzone(int32_t uMin, int32_t vMin) { sUMin = uMin; sVMin = vMin; }
+void RlsGetDeadzone(int32_t *uMin, int32_t *vMin) { *uMin = sUMin; *vMin = sVMin; }
+void RlsSetDitherPctQ8(int32_t ditherPctQ8) { sDitherPctQ8 = ditherPctQ8; }
+int32_t RlsGetDitherPctQ8(void) { return sDitherPctQ8; }
+
 AutotuneResult RlsGetResult(void) { return sResult; }
 int32_t  RlsGetKpResultQ8(void) { return sKpResultQ8; }
 int32_t  RlsGetKiResultQ8(void) { return sKiResultQ8; }
@@ -318,7 +344,7 @@ int32_t RlsGetDitherTorque(void) {
    * once converged -- see RLS.h's "Torque dither" section. */
   if (!sRunning || sResult == AUTOTUNE_RESULT_OK) return 0;
   int32_t torqueMax = ControlGetGains()->torqueClampMax;
-  int64_t amplitude = ((int64_t)torqueMax * RLS_DITHER_PCT_Q8) / 256;
+  int64_t amplitude = ((int64_t)torqueMax * sDitherPctQ8) / 256;
   return DitherSample((int32_t)amplitude);
 }
 uint32_t RlsGetProgressSeq(void) { return sProgressSeq; }
@@ -420,12 +446,12 @@ static int MapThetaToGains(int32_t *kpQ8, int32_t *kiQ8) {
                                                                checked before touching b at all */
   int64_t numQ16 = sThetaAQ16 - pTargetQ16;           /* a - p_target, Q16.16, > 0 here */
   int64_t kpQ16 = (numQ16 * RLS_SCALE) / sThetaBQ16;  /* (a - p_target)/b, Q16.16 */
-  if (kpQ16 <= 0 || kpQ16 > RLS_GAIN_MAX_Q16) return 0;   /* non-physical, or too large to trust --
+  if (kpQ16 <= 0 || kpQ16 > sGainMaxQ16) return 0;   /* non-physical, or too large to trust --
                                                               see RLS_GAIN_MAX_Q16's own comment */
 
   int64_t tiFactorQ16 = RLS_SCALE - pTargetQ16;        /* 1 - p_target, Q16.16, always in (0,1] here */
   int64_t kiQ16 = (kpQ16 * tiFactorQ16) / RLS_SCALE;
-  if (kiQ16 > RLS_GAIN_MAX_Q16) return 0;
+  if (kiQ16 > sGainMaxQ16) return 0;
 
   int32_t kp = Q16ToQ8Round(kpQ16);
   int32_t ki = Q16ToQ8Round(kiQ16);
@@ -463,7 +489,7 @@ void RlsTick(int32_t torqueCommand, int32_t velocityActual) {
   int32_t absV = (sVPrev < 0) ? -sVPrev : sVPrev;
   int32_t absUNow = (u < 0) ? -u : u;
   int32_t absVNow = (v < 0) ? -v : v;
-  int quiet = (absU < RLS_U_MIN && absV < RLS_V_MIN) && (absUNow < RLS_U_MIN && absVNow < RLS_V_MIN);
+  int quiet = (absU < sUMin && absV < sVMin) && (absUNow < sUMin && absVNow < sVMin);
 
   if (quiet) {
     /* Covariance wind-up guard: skip the P/theta update entirely during an
