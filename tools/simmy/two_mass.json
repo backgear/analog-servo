@@ -1,0 +1,16 @@
+{
+  "_comment": "Representative two-body chain: a motor-like body with periodic ripple, connected through a lightly-backlashed compliant coupling to a load-like body with stiction. Order-of-magnitude ratios, not a measurement of any real machine.",
+  "bodies": [
+    {"inertia": 64, "friction": 0.02, "rippleAmplitude": 60, "ripplePeriodCounts": 20},
+    {"inertia": 8, "friction": 0.01, "stictionLimit": 80, "coulombLevel": 50,
+     "frictionBumpCenter": 1800, "frictionBumpHalfWidth": 75, "frictionBumpExtra": 60}
+  ],
+  "couplings": [
+    {"springK": 3.16, "springD": 1.0, "backlashGap": 0.5}
+  ],
+  "feedbackBody": 0,
+  "subSteps": 20,
+  "analogChain": [
+    {"type": "lag", "param0": 0.6}
+  ]
+}

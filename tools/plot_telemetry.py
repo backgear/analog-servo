@@ -5,9 +5,11 @@ built on monitor_frame.FrameSync produces).
 
 One column per --window (label:start:end, seconds, relative to the
 capture's first frame); with no --window given, plots the whole capture
-as a single column. Each column is three stacked panels (position,
-velocity, torque) rather than a dual-axis chart -- different units,
-different scales, so they get separate axes, not one shared one.
+as a single column. Each column has three stacked panels (position,
+velocity, torque). Position also shows signed following error (commanded
+minus actual, counts) on a separately scaled right axis. Error is not
+rebased at the window start. Frames with load_position/load_velocity add a
+separate load-position/error panel and a load-velocity trace.
 
 Usage:
     python3 plot_telemetry.py --frames /tmp/two_moves_frames.json \\
@@ -30,6 +32,8 @@ GRID = "#e1e0d9"
 BASELINE = "#c3c2b7"
 BLUE = "#2a78d6"
 ORANGE = "#eb6834"
+PURPLE = "#8856a7"
+GREEN = "#258978"
 
 
 def parse_window(spec):
@@ -53,6 +57,53 @@ def panel(ax, data, t0, cmd_key, act_key, color, cmd_label, act_label, ylabel, b
     ax.legend(frameon=False, fontsize=8, loc="upper right", labelcolor=INK_SECONDARY)
 
 
+def following_error_panel(ax, data, t0, position_key="position"):
+    """Overlay true signed following error, independent of position rebasing."""
+    error_ax = ax.twinx()
+    error_ax.plot([f["t"] - t0 for f in data],
+                  [f["cmd_position"] - f[position_key] for f in data],
+                  color=PURPLE, linewidth=1.2, alpha=0.85,
+                  linestyle="-.", label="following error (cmd − actual)")
+    error_ax.axhline(0, color=PURPLE, linewidth=0.6, alpha=0.3)
+    error_ax.set_ylabel("following error (ct)", color=PURPLE)
+    error_ax.tick_params(axis="y", colors=PURPLE)
+    error_ax.spines["top"].set_visible(False)
+    error_ax.spines["left"].set_visible(False)
+    error_ax.spines["bottom"].set_visible(False)
+    error_ax.spines["right"].set_color(PURPLE)
+    handles, labels = ax.get_legend_handles_labels()
+    error_handles, error_labels = error_ax.get_legend_handles_labels()
+    ax.get_legend().remove()
+    error_ax.legend(handles + error_handles, labels + error_labels,
+                    frameon=False, fontsize=7, loc="upper left",
+                    labelcolor=INK_SECONDARY)
+    return error_ax
+
+
+def share_limits(axes):
+    """Use identical scales across comparison columns, including error axes."""
+    lower = min(ax.get_ylim()[0] for ax in axes)
+    upper = max(ax.get_ylim()[1] for ax in axes)
+    for ax in axes:
+        ax.set_ylim(lower, upper)
+
+
+def mark_phases(axes, data, t0):
+    start = 0
+    while start < len(data):
+        phase = data[start].get('phase', '')
+        end = start + 1
+        while end < len(data) and data[end].get('phase', '') == phase:
+            end += 1
+        a, b = data[start]['t'] - t0, data[end - 1]['t'] - t0 + 0.001
+        for ax in axes:
+            if start:
+                ax.axvline(a, color=BASELINE, linewidth=0.5, alpha=0.5)
+            if 'hold' in phase:
+                ax.axvspan(a, b, color=BASELINE, alpha=0.12, zorder=0)
+        start = end
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -61,6 +112,8 @@ def main():
                      metavar="LABEL:START:END",
                      help="one column per window, times in seconds relative to the "
                           "capture's first frame; repeatable. Default: whole capture, one column.")
+    ap.add_argument("--shared-scales", action="store_true",
+                    help="identical y limits across columns (including error axes)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--title", default="analog-servo-f103 bench telemetry")
     args = ap.parse_args()
@@ -84,8 +137,13 @@ def main():
         "font.size": 10, "axes.titlesize": 11, "axes.titleweight": "bold",
         "axes.titlecolor": INK_PRIMARY, "grid.color": GRID, "grid.linewidth": 0.8,
     })
-    fig, axes = plt.subplots(3, n, figsize=(5.5 * n, 7.5), sharex="col", squeeze=False)
+    show_load = all('load_position' in f and 'load_velocity' in f for f in frames)
+    rows = 4 if show_load else 3
+    velocity_row, torque_row = rows - 2, rows - 1
+    fig, axes = plt.subplots(rows, n, figsize=(6.5 * n, 9.5 if show_load else 7.5),
+                             sharex="col", squeeze=False)
 
+    error_groups = [[], []] if show_load else [[]]
     any_fault = False
     for col, (label, start, end) in enumerate(windows):
         data = [f for f in frames if start <= f["t"] <= end]
@@ -96,11 +154,30 @@ def main():
         pos_baseline = data[0]["position"]
         panel(axes[0, col], data, wt0, "cmd_position", "position", BLUE, "commanded", "actual",
               "position (ct, rel. to window start)", baseline=pos_baseline)
-        panel(axes[1, col], data, wt0, "cmd_velocity", "velocity", ORANGE, "commanded", "actual", "velocity (ct/tick)")
-        panel(axes[2, col], data, wt0, None, "torque", INK_PRIMARY, None, "torque.command", "torque")
+        error_groups[0].append(following_error_panel(axes[0, col], data, wt0))
+        if show_load:
+            panel(axes[1, col], data, wt0, "cmd_position", "load_position", GREEN,
+                  "commanded", "load", "load position (ct, same origin)", baseline=pos_baseline)
+            error_groups[1].append(following_error_panel(axes[1, col], data, wt0, "load_position"))
+        velocity_ax = axes[velocity_row, col]
+        panel(velocity_ax, data, wt0, "cmd_velocity", "velocity", ORANGE,
+              "cascade target", "feedback", "velocity (ct/tick)")
+        if show_load:
+            velocity_ax.plot([f['t'] - wt0 for f in data], [f['load_velocity'] for f in data],
+                             color=GREEN, linewidth=1, alpha=0.8, label="load")
+            velocity_ax.legend(frameon=False, fontsize=8, loc="upper right", labelcolor=INK_SECONDARY)
+        panel(axes[torque_row, col], data, wt0, None, "torque", INK_PRIMARY,
+              None, "torque.command", "torque")
+        mark_phases(axes[:, col], data, wt0)
         if label:
             axes[0, col].set_title(label)
-        axes[2, col].set_xlabel("time (s)")
+        axes[torque_row, col].set_xlabel("time (s)")
+
+    if args.shared_scales:
+        for row in axes:
+            share_limits(row)
+        for group in error_groups:
+            share_limits(group)
 
     fig.suptitle(args.title, color=INK_PRIMARY, fontsize=12, fontweight="bold", y=0.995)
     fig.tight_layout(rect=[0, 0, 1, 0.97])
