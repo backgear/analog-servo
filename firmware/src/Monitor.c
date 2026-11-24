@@ -89,8 +89,22 @@ static int          sEnabled;
 static volatile int sPending;
 
 /* Rolling flight-recorder history -- see Monitor.h's MonitorDumpHistory()
- * comment. MONITOR_HISTORY_LEN*sizeof(MonitorFrame) = 300*44 = 13200 B. */
+ * comment. MONITOR_HISTORY_LEN*sizeof(MonitorFrame) = 300*44 = 13200 B on
+ * L152 (512K flash/80K RAM -- plenty of headroom). F103C8T6 only has 20K
+ * RAM total; discovered on this branch's own rebase onto `main` (which
+ * independently grew the frame by velocityIntegral) that 300 frames'
+ * worth, on top of RLS.c's own state and everything else, overflows
+ * F103's RAM by 680 bytes at link time -- the frame itself can't shrink
+ * (every field earns its place, see Monitor.h), so the history depth is
+ * the one knob that's free to differ per board; smaller on F103 is a
+ * capability tradeoff (less flight-recorder lookback), not a correctness
+ * issue -- MonitorDumpHistory()/MonitorSetFreezePostTicks() etc. all
+ * derive from this constant, not a hand-typed frame count. */
+#if defined(STM32F103xB)
+#define MONITOR_HISTORY_LEN 150U   /* 150*44 = 6600 B -- same margin, well within budget */
+#else
 #define MONITOR_HISTORY_LEN 300U
+#endif
 static MonitorFrame sHistory[MONITOR_HISTORY_LEN];
 static uint32_t     sHistoryHead;    /* next write index */
 static uint32_t     sHistoryCount;   /* valid entries recorded so far, caps at
