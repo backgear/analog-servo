@@ -488,12 +488,24 @@ int AppCommutationDetectPolesBusy(void) { return 0; }
 int AppGetCommutationDetectPolesFailed(void) { return 0; }
 #endif /* ANALOG_SERVO_TWO_PHASE_DRIVE */
 
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
 static int32_t ClampToTorqueRange(int32_t amp) {
   if (amp > sConfig.torqueClampMax) amp = sConfig.torqueClampMax;
   if (amp < sConfig.torqueClampMin) amp = sConfig.torqueClampMin;
   return amp;
 }
+#endif
 
+/* Both autotune mechanisms (the relay method below and RLS further down)
+ * are excluded from F103 to recover flash -- see platformio.ini's
+ * analog_servo_f103 build_src_filter comment. Same shape as
+ * ANALOG_SERVO_TWO_PHASE_DRIVE's split: the REAL bodies (this branch) call
+ * into Autotune.c/RLS.c/GainGlide.c, only ever reached when
+ * ANALOG_SERVO_HAS_AUTOTUNE is defined (so those three .c files being
+ * absent from an F103 build never leaves an unresolved symbol); the #else
+ * branch below gives Protocol.c's `autotune.*`/`rls.*` commands degenerate
+ * always-idle/always-none stand-ins so it doesn't need its own #ifdef. */
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
 void AppAutotuneStartRelay(int32_t amplitude, uint32_t maxTicks) {
   if (FaultIsLatched()) return;   /* can't run a test while faulted */
   FaultClear();   /* see AppPolarityLearn()'s comment -- fresh test, fresh window */
@@ -567,6 +579,40 @@ void     AppRlsApply(void) {
   uint32_t totalTicks = (uint32_t)(((uint64_t)sRlsGlideMs * CONTROL_TICK_HZ) / 1000U);
   GainGlideStart(&sGainGlide, current, &target, totalTicks);
 }
+#else /* !ANALOG_SERVO_HAS_AUTOTUNE -- degenerate stand-ins, same convention as
+         ANALOG_SERVO_TWO_PHASE_DRIVE's #else branch further down */
+void    AppAutotuneStartRelay(int32_t amplitude, uint32_t maxTicks) { (void)amplitude; (void)maxTicks; }
+void    AppAutotuneStop(void) {}
+int     AppAutotuneBusy(void) { return 0; }
+AutotuneMethod AppAutotuneGetMethod(void) { return AUTOTUNE_METHOD_RELAY; }
+AutotuneResult AppAutotuneGetResult(void) { return AUTOTUNE_RESULT_NONE; }
+int32_t  AppAutotuneGetKpResultQ8(void) { return 0; }
+int32_t  AppAutotuneGetKiResultQ8(void) { return 0; }
+int32_t  AppAutotuneGetPosPResultQ8(void) { return 0; }
+uint32_t AppAutotuneGetMeasuredPeriodTicks(void) { return 0; }
+int32_t  AppAutotuneGetMeasuredGainQ8(void) { return 0; }
+void     AppAutotuneApply(void) {}
+uint32_t AppAutotuneGetRelayProgressSeq(void) { return 0; }
+uint32_t AppAutotuneGetRelayProgressTicksElapsed(void) { return 0; }
+uint32_t AppAutotuneGetRelayProgressMaxTicks(void) { return 0; }
+uint32_t AppAutotuneGetRelayProgressSwitchCount(void) { return 0; }
+uint32_t AppAutotuneGetRelayProgressSwitchesNeeded(void) { return 0; }
+int32_t  AppAutotuneGetRelayProgressPeakVelocity(void) { return 0; }
+void    AppRlsStart(int32_t lambdaQ8, uint32_t glideMs) { (void)lambdaQ8; (void)glideMs; }
+void    AppRlsStop(void) {}
+int     AppRlsBusy(void) { return 0; }
+AutotuneResult AppRlsGetResult(void) { return AUTOTUNE_RESULT_NONE; }
+int32_t  AppRlsGetKpResultQ8(void) { return 0; }
+int32_t  AppRlsGetKiResultQ8(void) { return 0; }
+int32_t  AppRlsGetThetaAQ8(void) { return 0; }
+int32_t  AppRlsGetThetaBQ8(void) { return 0; }
+int64_t  AppRlsGetPTrace(void) { return 0; }
+uint32_t AppRlsGetTicksObserved(void) { return 0; }
+uint32_t AppRlsGetProgressSeq(void) { return 0; }
+void     AppRlsSetAggressiveness(int32_t extraSquarings) { (void)extraSquarings; }
+int32_t  AppRlsGetAggressiveness(void) { return 0; }
+void     AppRlsApply(void) {}
+#endif /* ANALOG_SERVO_HAS_AUTOTUNE */
 
 void AppSignalStart(SignalType type, SignalTarget target, int32_t amplitude,
                      uint32_t halfPeriodTicks, uint32_t durationTicks) {
@@ -609,6 +655,7 @@ static int32_t ComputeCommandedVelocity(void) {
 void AppControlTick(void) {
   HAL_GPIO_WritePin(TICK_ACTIVE_GPIO_PORT, TICK_ACTIVE_PIN, GPIO_PIN_SET);
 
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
   /* AppRlsApply()'s glide, if one is in flight -- applies regardless of
    * which mode branch runs below, same as FaultTick()/MonitorTick() at the
    * bottom of this function. Calls ControlSetGains() directly rather than
@@ -619,6 +666,7 @@ void AppControlTick(void) {
     ControlGains glided;
     if (GainGlideTick(&sGainGlide, &glided)) ControlSetGains(&glided);
   }
+#endif
 
   uint32_t nowCycles = DWT->CYCCNT;
   uint32_t dtCycles = nowCycles - sLastCycles;
@@ -749,9 +797,16 @@ void AppControlTick(void) {
 #endif /* ANALOG_SERVO_TWO_PHASE_DRIVE */
   } else if (AppAutotuneBusy()) {
     /* Bypasses the cascade entirely -- the relay drives torque directly off
-     * velocityActual's sign, it isn't pursuing a position target. */
+     * velocityActual's sign, it isn't pursuing a position target. Dead on
+     * F103 (AppAutotuneBusy() permanently returns 0 there -- see its own
+     * #else stand-in above), but AutotuneTick() itself still needs an
+     * #ifdef, not just a dead branch: Autotune.c isn't linked on F103 at
+     * all (see platformio.ini), so the real call has to be compiled out,
+     * not merely unreached. */
     ControlSetTorqueScale(CONTROL_TORQUE_SCALE_FULL_Q8);
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
     torqueCommand = AutotuneTick(velocityActual);
+#endif
     if (sConfig.polarityLearned) torqueCommand *= sConfig.polaritySign;
   } else if (SignalIsActive()) {
     HAL_GPIO_WritePin(SIGNAL_BUSY_GPIO_PORT, SIGNAL_BUSY_PIN, GPIO_PIN_SET);   /* see
@@ -822,16 +877,20 @@ void AppControlTick(void) {
     torqueCommand = ControlTickWithReferenceLimitQ8(positionTarget, positionActual, velocityActual,
         referenceVelocityQ8, positionTrajectoryActive ? CommandVelocityLimit() : sConfig.velocityClamp, dtCycles);
     if (sConfig.polarityLearned) torqueCommand *= sConfig.polaritySign;
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
     /* Near-passive observer -- sees the same already-polarity-corrected
      * torque command and measured velocity the cascade above just used,
      * plus a small self-limiting dither while still converging (see RLS.h's
      * "Torque dither" section) -- RlsGetDitherTorque() returns exactly 0
      * once converged or not running, so this is always safe to add in.
      * Re-clamped afterward since dither can push the command slightly past
-     * the configured torque limits. */
+     * the configured torque limits. RLS.c isn't linked at all without
+     * ANALOG_SERVO_HAS_AUTOTUNE (see platformio.ini) -- no observer, no
+     * dither, same as F103's degenerate AppRls*() stand-ins above. */
     torqueCommand += RlsGetDitherTorque();
     torqueCommand = ClampToTorqueRange(torqueCommand);
     RlsTick(torqueCommand, velocityActual);
+#endif
   } else {
     /* Disabled (and not learning): keep the position target accumulator
      * glued to actual position, so re-enabling doesn't yank the axis back
@@ -891,7 +950,9 @@ void AppControlTick(void) {
 
   if (FaultIsLatched()) {
     SignalStop();     /* a fault mid-test aborts it, rather than leaving it running silently */
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
     AutotuneStop();   /* ditto for an in-progress autotune */
+#endif
     OutputForceSafe();
     IndicatorSetState(INDICATOR_FAULT);
     sLastTorqueCommand = 0;
@@ -1008,13 +1069,17 @@ int main(void) {
   PositionMoveInit(&sPositionMove);
   FaultInit();
   SignalInit();
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
   AutotuneInit();
+#endif
   IndicatorInit();
   ProtocolInit();
   MonitorInit();
   UsbCompositeCdcInit();   /* channel 0: CLI (Protocol.c); channel 1: binary
                                telemetry (Monitor.c) -- see docs/monitor-protocol.md */
+#ifdef ANALOG_SERVO_HAS_UART
   UsartInit();
+#endif
 
   sPositionTargetAccum = EncoderGetPositionCounts();
   sLastCycles = DWT->CYCCNT;

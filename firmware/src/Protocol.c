@@ -40,7 +40,20 @@ typedef struct {
 static void TxUsb(const uint8_t *data, uint16_t len) {
   while (CDCComposite_Transmit_Ch0((uint8_t *)data, len) == USBD_BUSY) { }
 }
+#ifdef ANALOG_SERVO_HAS_UART
 static void TxUart(const uint8_t *data, uint16_t len) { UsartTransmit(data, len); }
+#else
+/* usart_f1.c/usart_l1.c (and the HAL UART driver chain they pull in)
+ * aren't linked at all without ANALOG_SERVO_HAS_UART -- see
+ * platformio.ini's analog_servo_f103 build_src_filter comment --
+ * UsartTransmit() itself doesn't exist to call. sUartInst below keeps
+ * initializing .tx to this no-op rather than disappearing entirely: its
+ * RX ring never receives anything either (ProtocolRxFromIsrUart() is only
+ * ever invoked from usart_f1.c/usart_l1.c's own RX ISR, which also isn't
+ * linked), so TxUart never actually runs on this board -- only the
+ * function body (not UsartTransmit's own flash/HAL-chain cost) stays. */
+static void TxUart(const uint8_t *data, uint16_t len) { (void)data; (void)len; }
+#endif
 
 static ProtocolInstance sUsbInst  = { .tx = TxUsb };
 static ProtocolInstance sUartInst = { .tx = TxUart };
@@ -144,6 +157,7 @@ static const char *SignalTypeName(SignalType t) {
 static const char *SignalTargetName(SignalTarget t) {
   return (t == SIGNAL_TARGET_POSITION) ? "position" : "torque";
 }
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
 static const char *AutotuneResultName(AutotuneResult r) {
   switch (r) {
     case AUTOTUNE_RESULT_OK:               return "ok";
@@ -158,6 +172,7 @@ static const char *AutotuneMethodName(AutotuneMethod m) {
     default:                  return "relay";
   }
 }
+#endif /* ANALOG_SERVO_HAS_AUTOTUNE */
 static const char *OutputTopologyName(OutputTopology t) {
   return (t == OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG) ? "two_phase_analog" : "analog_torque";
 }
@@ -431,6 +446,15 @@ static int  setMonitorFreezePostTicks(const char *v) {
   return 0;
 }
 
+/* The whole `autotune.*`/`rls.*` CLI surface -- getters/setters, the
+ * `autotune` command, and the unsolicited progress lines -- is excluded on
+ * F103 along with its backing code (RLS.c/GainGlide.c/Autotune.c, see
+ * platformio.ini's analog_servo_f103 build_src_filter comment): the user
+ * wants the CLI surface gone there, not just degenerate (AppAutotuneBusy()
+ * et al already safely report "idle"/"none" either way -- see main.c's own
+ * #ifdef ANALOG_SERVO_HAS_AUTOTUNE split -- so none of this is needed for
+ * correctness, only for actually dropping the commands/variables). */
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
 /* relay and rls are mutually exclusive while running (cmdAutotuneStart()'s
  * guards) -- whichever is busy right now wins; once both are idle, prefer
  * whichever has a non-NONE result (relay by default, since it's checked
@@ -476,6 +500,7 @@ static int setRlsAggressiveness(const char *v) {
                                        the clamped value actually stored, not the raw request */
   return 0;
 }
+#endif /* ANALOG_SERVO_HAS_AUTOTUNE */
 
 /* Wire integers use explicit fractional bits, avoiding ambiguous Q16/Q8
  * labels: value = raw / 2^fractional_bits. Torque units are normalized command
@@ -554,6 +579,7 @@ static const var_entry_t kVars[] = {
   { "test.target",      getSignalTarget,      NULL, ENUM_META("\"torque\",\"position\"") },
   { "monitor.active",     getMonitorActive,     NULL, BOOL_META },
   { "monitor.post_trigger_ticks", getMonitorFreezePostTicks, setMonitorFreezePostTicks, UINT_META("tick") },
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
   { "autotune.active",       getAutotuneActive,     NULL, BOOL_META },
   { "autotune.method",       getAutotuneMethod,     NULL, ENUM_META("\"relay\",\"rls\"") },
   { "autotune.result",       getAutotuneResult,     NULL, ENUM_META("\"none\",\"ok\",\"no_oscillation\",\"bad_measurement\"") },
@@ -572,6 +598,7 @@ static const var_entry_t kVars[] = {
   { "autotune.rls_p_trace",  getRlsPTrace,          NULL, I64_META("reserved") },
   { "autotune.rls_ticks",    getRlsTicks,           NULL, UINT_META("tick") },
   { "autotune.rls_aggressiveness", getRlsAggressiveness, setRlsAggressiveness, INT_META("pole_squarings") },
+#endif /* ANALOG_SERVO_HAS_AUTOTUNE */
   { "diag.tick_cycles",     getDiagTickCycles,     NULL, UINT_META("cpu_cycle") },
   { "diag.tick_cycles_max", getDiagTickCyclesMax,  NULL, UINT_META("cpu_cycle") },
   { "diag.tick_load_pct",   getDiagTickLoadPct,    NULL, INT_META("percent") },
@@ -799,6 +826,7 @@ static void cmdSignal(int argc, char **argv) {
   respError("unknown test subcommand");
 }
 
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
 #define RLS_DEFAULT_LAMBDA_Q8  256   /* 1.0, no forgetting -- the stable default; see RLS.c's
                                          file comment on forgetting-factor RLS "bursting" under
                                          near-noiseless tracking before loosening this */
@@ -875,6 +903,7 @@ static void cmdAutotune(int argc, char **argv) {
   if (!strcmp(argv[1], "start")) { cmdAutotuneStart(argc, argv); return; }
   respError("unknown autotune subcommand");
 }
+#endif /* ANALOG_SERVO_HAS_AUTOTUNE */
 
 static void cmdMonitor(int argc, char **argv) {
   if (argc < 2) { respError("usage: monitor <start|stop|dump|schema>"); return; }
@@ -956,8 +985,10 @@ static const cmd_t kCommands[] = {
     "<learn | detect_poles <encoder_cpr>> -- alignment commissioning / pole-count detection (two_phase_analog only)" },
   { "test",     cmdSignal,   "<impulse <amp> | square <torque|position> <amp> <half_period_ticks> [duration] | stop>" },
   { "monitor",  cmdMonitor,  "<start|stop|dump|schema> -- toggle the channel-1 binary telemetry stream, dump recorded history to it, or print its frame schema as JSON" },
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
   { "autotune", cmdAutotune,
     "<start relay <amp> [max_ticks] | start rls [lambda_q8] [glide_ms] | stop | apply>" },
+#endif
   { "config",   cmdConfig,   "<save|load|defaults> -- flash config persistence" },
   { NULL, NULL, NULL },
 };
@@ -996,6 +1027,7 @@ static void PollInstance(ProtocolInstance *inst) {
   }
 }
 
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
 /* A relay run can take up to its ~20s default timeout of otherwise-silent
  * tick-by-tick state cycling -- print a periodic status line on both
  * transports (unsolicited, so it doesn't go through sActive/respKV) rather
@@ -1056,6 +1088,7 @@ static void PollRlsProgress(void) {
   sUsbInst.tx((const uint8_t *)buf, (uint16_t)n);
   sUartInst.tx((const uint8_t *)buf, (uint16_t)n);
 }
+#endif /* ANALOG_SERVO_HAS_AUTOTUNE */
 
 void ProtocolInit(void) {
   sUsbInst.head = sUsbInst.tail = 0;
@@ -1064,13 +1097,17 @@ void ProtocolInit(void) {
   sUartInst.head = sUartInst.tail = 0;
   sUartInst.len = 0;
   sUartInst.pendEol = 0;
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
   sLastPrintedRelayProgressSeq = 0U;
   sLastPrintedRlsProgressSeq = 0U;
+#endif
 }
 
 void ProtocolPoll(void) {
   PollInstance(&sUsbInst);
   PollInstance(&sUartInst);
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
   PollAutotuneProgress();
   PollRlsProgress();
+#endif
 }

@@ -100,20 +100,19 @@ class SimmyCommutationLearnIntegrationTest(unittest.TestCase):
             ROOT / 'firmware/src/Output.c',
             ROOT / 'firmware/src/Fault.c',
             ROOT / 'firmware/src/Control.c',
+            # Autotune.c: this driver's own main() calls AutotuneInit()
+            # directly as part of its init sequence (mirroring main.c's real
+            # one), so it's linked regardless of ANALOG_SERVO_HAS_AUTOTUNE.
             ROOT / 'firmware/src/Autotune.c',
             ROOT / 'firmware/src/Signal.c',
             ROOT / 'firmware/src/Polarity.c',
-            # RLS.c/GainGlide.c: `main`'s online RLS self-tuning estimator,
-            # added after this test was first written (see this project's
-            # own rebase history) -- AppControlTick() now calls
-            # GainGlideActive()/GainGlideTick() unconditionally at the top
-            # of every tick (not just inside the enabled-cascade branch
-            # this test's scenario never takes), so these must link for
-            # real, same as Control.c/Fault.c/Autotune.c/Signal.c/
-            # Polarity.c above -- not stubbed, both are pure HAL-independent
-            # modules like those.
-            ROOT / 'firmware/src/RLS.c',
-            ROOT / 'firmware/src/GainGlide.c',
+            # RLS.c/GainGlide.c deliberately NOT linked here (unlike
+            # Autotune.c above): this driver doesn't define
+            # ANALOG_SERVO_HAS_AUTOTUNE (see _CFLAGS above) and never calls
+            # either directly itself, so main.c's own #ifdef compiles out
+            # every call site into them (same convention as
+            # ANALOG_SERVO_TWO_PHASE_DRIVE) with nothing left referencing
+            # them.
             SIMMY / 'src/simmy.c',
             SIMMY / 'src/simmy_bldc.c',
         ]

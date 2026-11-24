@@ -47,7 +47,11 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
   }
 }
 
+#ifdef ANALOG_SERVO_HAS_UART
 void USART1_IRQHandler(void) { HAL_UART_IRQHandler(&hUart1); }
+#endif   /* without it, USART1's NVIC vector just keeps the startup file's weak
+            default handler -- harmless, since UsartInit() (main.c) never
+            unmasks that interrupt on this build either (see its own #ifdef) */
 
 /* F103 has CAN, so this vector is shared (USB_LP_CAN1_RX0_IRQn), unlike the
  * L152 build's USB_LP_IRQn -- no CAN peripheral used here either way. */
