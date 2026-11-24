@@ -6,41 +6,61 @@ on:
   pull_request:
 
 permissions:
-  contents: read   # least-privilege GITHUB_TOKEN
+  contents: read
 
 jobs:
-  build-and-test:
+  native-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
-      - name: Cache PlatformIO
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.platformio
-            ~/.cache/pip
-          key: pio-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini') }}
-          restore-keys: pio-${{ runner.os }}-
-
       - name: Install PlatformIO
-        run: pip install --upgrade platformio
-
+        run: pip install platformio
       - name: Run native unit tests
         run: pio test -d firmware -e native
 
-      - name: Build firmware (NUCLEO-L152RE)
-        run: pio run -d firmware -e analog_servo
-
+  firmware:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [analog_servo, analog_servo_f103]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ matrix.environment }}-${{ hashFiles('firmware/platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-${{ matrix.environment }}-
+      - name: Install PlatformIO
+        run: pip install platformio
+      - name: Build firmware
+        run: pio run -d firmware -e ${{ matrix.environment }}
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: firmware
+          name: firmware-${{ matrix.environment }}
           path: |
-            firmware/.pio/build/analog_servo/firmware.elf
-            firmware/.pio/build/analog_servo/firmware.bin
+            firmware/.pio/build/${{ matrix.environment }}/firmware.elf
+            firmware/.pio/build/${{ matrix.environment }}/firmware.bin
           if-no-files-found: error
+
+  host-tests:
+    runs-on: ubuntu-latest
+    env:
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install host test dependencies
+        run: pip install numpy scipy matplotlib pyserial
+      - name: Run host-tool tests
+        run: python -m unittest discover -s tools -p 'test_*.py' -v

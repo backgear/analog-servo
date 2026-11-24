@@ -5,8 +5,13 @@
 #ifndef USBD_CONF_H
 #define USBD_CONF_H
 
+#if defined(STM32L152xE)
 #include "stm32l1xx_hal.h"
 #include "stm32l1xx_hal_conf.h"
+#else
+#include "stm32f1xx_hal.h"
+#include "stm32f1xx_hal_conf.h"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

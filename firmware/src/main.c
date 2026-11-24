@@ -1,6 +1,7 @@
 /**
  * analog-servo -- closed-loop analog torque-command servo controller
- * firmware (STM32L152, NUCLEO-L152RE). See docs/architecture.md.
+ * firmware (STM32L152/NUCLEO-L152RE, or STM32F103/"Blue Pill" -- this
+ * `f103` branch). See docs/architecture.md.
  *
  * Self-contained superloop: no RTOS, HAL polled/superloop, SysTick
  * timebase. This file is also the top-level mode-dispatch coordinator
@@ -31,6 +32,7 @@
 
 void Error_Handler(void) { __disable_irq(); while (1) { } }
 
+#if defined(STM32L152xE)
 /* NUCLEO-L152RE: 8 MHz HSE -> PLL x12 /3 -> 32 MHz SYSCLK (L152's max).
  * PLLVCO (96 MHz) / 2 = 48 MHz taps USB automatically.
  *
@@ -66,6 +68,39 @@ void SystemClock_Config(void) {
   clk.APB2CLKDivider = RCC_HCLK_DIV1;
   if (HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_1) != HAL_OK) Error_Handler();
 }
+#else
+/* F103 "Blue Pill": 8 MHz HSE -> PLL x9 -> 72 MHz SYSCLK (standard Blue
+ * Pill config). APB1 capped at 36 MHz (div 2); APB2 stays at 72 MHz. USB
+ * needs the 48 MHz tap (72 MHz / 1.5), which only lands exactly if HSE
+ * really is 8 MHz -- see HSE_VALUE in platformio.ini. Unlike the L152
+ * build above, HSE is a real crystal here (RCC_HSE_ON, not _BYPASS) --
+ * the Blue Pill has no onboard debugger supplying a driven clock. */
+void SystemClock_Config(void) {
+  RCC_OscInitTypeDef osc = {0};
+  RCC_ClkInitTypeDef clk = {0};
+
+  osc.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  osc.HSEState = RCC_HSE_ON;
+  osc.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
+  osc.PLL.PLLState = RCC_PLL_ON;
+  osc.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  osc.PLL.PLLMUL = RCC_PLL_MUL9;
+  if (HAL_RCC_OscConfig(&osc) != HAL_OK) Error_Handler();
+
+  clk.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
+                  RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+  clk.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  clk.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  clk.APB1CLKDivider = RCC_HCLK_DIV2;   /* APB1 max 36 MHz */
+  clk.APB2CLKDivider = RCC_HCLK_DIV1;
+  if (HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_2) != HAL_OK) Error_Handler();
+
+  RCC_PeriphCLKInitTypeDef usb = {0};
+  usb.PeriphClockSelection = RCC_PERIPHCLK_USB;
+  usb.UsbClockSelection = RCC_USBCLKSOURCE_PLL_DIV1_5;   /* 72 MHz / 1.5 = 48 MHz */
+  if (HAL_RCCEx_PeriphCLKConfig(&usb) != HAL_OK) Error_Handler();
+}
+#endif
 
 /* ---- App* coordinator state ------------------------------------------------ */
 static ServoMode      sMode = SERVO_MODE_STEPDIR;
@@ -130,7 +165,7 @@ static void ApplyConfigToModules(void) {
   ControlSetGains(&gains);
   FaultSetFollowingErrorConfig(sConfig.followingErrorLimitCounts, sConfig.followingErrorHardFault);
   FaultSetSustainedCurrentConfig(sConfig.sustainedCurrentMinTorque, sConfig.sustainedCurrentWindowTicks);
-  OutputSetZeroTrim(sConfig.zeroTrimCounts);
+  OutputSetZeroTrim(sConfig.zeroTrim);
   AnalogVelocitySetConfig(sConfig.analogVelocityScaleQ8, sConfig.analogVelocityHysteresisCounts);
   RampSetAcceleration(&sRamp, sConfig.rampAccelCountsPerTickPerSec);
   RampSetJerk(&sRamp, sConfig.velocityJerk);
@@ -254,8 +289,8 @@ void AppSetRampAccel(int32_t accelCountsPerTickPerSec) {
   sConfig.rampAccelCountsPerTickPerSec = accelCountsPerTickPerSec;
   ApplyConfigToModules();
 }
-void AppSetZeroTrim(int32_t trimCounts) {
-  sConfig.zeroTrimCounts = trimCounts;
+void AppSetZeroTrim(int32_t trimTorqueUnits) {
+  sConfig.zeroTrim = trimTorqueUnits;
   ApplyConfigToModules();
 }
 void AppSetAnalogVelocityConfig(int32_t scaleQ8, int32_t hysteresisCounts) {

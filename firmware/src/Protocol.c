@@ -304,7 +304,7 @@ static int  setTorqueClampMax(const char *v) {
   return 0;
 }
 
-static void getOutputZeroTrim(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->zeroTrimCounts); }
+static void getOutputZeroTrim(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->zeroTrim); }
 static int  setOutputZeroTrim(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0) return -1;
@@ -451,7 +451,7 @@ static const var_entry_t kVars[] = {
   { "torque.max", getTorqueClampMax, setTorqueClampMax, TORQUE_META },
   { "torque.sustained_threshold",   getSustainedCurrentMinTorque,   setSustainedCurrentMinTorque, TORQUE_META },
   { "torque.sustained_ticks", getSustainedCurrentWindowTicks, setSustainedCurrentWindowTicks, INT_META("tick") },
-  { "output.trim",   getOutputZeroTrim,    setOutputZeroTrim, INT_META("output_code") },
+  { "output.trim",   getOutputZeroTrim,    setOutputZeroTrim, TORQUE_META },
   { "output.polarity_learned",   getPolarityLearned,   NULL, BOOL_META },
   { "output.polarity",      getPolaritySign,      NULL, INT_META("sign") },
   { "output.polarity_failed",      getPolarityLearnFailed,     NULL, BOOL_META },

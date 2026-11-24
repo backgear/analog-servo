@@ -1,7 +1,16 @@
 #ifndef MAIN_H
 #define MAIN_H
 
+#if defined(STM32L152xE)
 #include "stm32l1xx_hal.h"
+#elif defined(STM32F103xB)
+#include "stm32f1xx_hal.h"
+#elif defined(ANALOG_SERVO_NATIVE_TEST)
+#include "stm32l1xx_hal.h"   /* host tests build against the L1-shaped mock
+                               * in test/mocks/, regardless of target board */
+#else
+#error "main.h: no known MCU family macro defined -- see platformio.ini's build_flags (STM32L152xE / STM32F103xB / ANALOG_SERVO_NATIVE_TEST)"
+#endif
 #include "ConfigStore.h"
 #include "Fault.h"
 #include "Signal.h"
@@ -101,7 +110,7 @@ void AppSetFollowingErrorConfig(int32_t limitCounts, int hardFault);
 /* FAULT_SUSTAINED_CURRENT config -- see Fault.h. minTorque <= 0 disables
  * the check entirely. */
 void AppSetSustainedCurrentConfig(int32_t minTorque, int32_t windowTicks);
-void AppSetZeroTrim(int32_t trimCounts);   /* see Output.h's OutputSetZeroTrim */
+void AppSetZeroTrim(int32_t trimTorqueUnits);   /* see Output.h's OutputSetZeroTrim */
 
 /* Config record persistence. */
 int  AppConfigSave(void);      /* 0 ok, -1 flash write failed */

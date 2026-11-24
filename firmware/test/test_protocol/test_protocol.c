@@ -56,7 +56,7 @@ void AppSetGains(int32_t p, int32_t kp, int32_t ki) {
 void AppSetTorqueClamp(int32_t mn, int32_t mx) { sConfig.torqueClampMin = mn; sConfig.torqueClampMax = mx; }
 void AppSetVelocityClamp(int32_t c) { sConfig.velocityClamp = c; }
 void AppSetRampAccel(int32_t a) { sConfig.rampAccelCountsPerTickPerSec = a; }
-void AppSetZeroTrim(int32_t trim) { sConfig.zeroTrimCounts = trim; }
+void AppSetZeroTrim(int32_t trim) { sConfig.zeroTrim = trim; }
 void AppSetAnalogVelocityConfig(int32_t scaleQ8, int32_t hysteresisCounts) {
   sConfig.analogVelocityScaleQ8 = scaleQ8;
   sConfig.analogVelocityHysteresisCounts = hysteresisCounts;
@@ -1006,7 +1006,7 @@ static void test_output_zero_trim_roundtrip(void) {
   capReset();
   run("set output.trim -12");
   TEST_ASSERT_NULL(strstr(cap, "error="));
-  TEST_ASSERT_EQUAL_INT32(-12, sConfig.zeroTrimCounts);
+  TEST_ASSERT_EQUAL_INT32(-12, sConfig.zeroTrim);
   capReset();
   run("get output.trim");
   TEST_ASSERT_NOT_NULL(strstr(cap, "output.trim=-12"));
