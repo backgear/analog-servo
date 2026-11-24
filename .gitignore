@@ -8,3 +8,8 @@ __pycache__/
 # AGENTS.md's Documentation convention. Remove this line (and run
 # `git add docs/`) once it's ready to ship.
 docs/
+
+# Raw bench/sim captures (logs, .json.gz, scratch settings dumps) --
+# scratch, not checked in. Promote a finding into docs/ instead of
+# committing the data that produced it.
+experiments/
