@@ -29,6 +29,42 @@ typedef struct __attribute__((packed)) {
   int32_t  commandedVelocity;    /* DESIRED, not measured -- same staleness caveats */
   int32_t  velocityIntegral;     /* Diagnostic PI state in torque units * 65536.
                                      Bounded by the configured torque clamp. */
+  int32_t  electricalAngleDeg;  /* Commutation.c's electrical angle (0..359 degrees),
+                                     output.topology=two_phase_analog only -- see
+                                     docs/two-phase-drive.md. Stale at its 0
+                                     initial value on any build/run that never
+                                     actually drives that topology (default
+                                     env:analog_servo, env:analog_servo_two_phase
+                                     while not on that topology, or while a fault
+                                     is latched) -- same staleness convention as
+                                     commandedPosition/commandedVelocity above. */
+  int32_t  hallSector;       /* RAW Hall sector (0..5, or -1 for HallDecode's own
+                                 invalid-state marker -- see Hall.h), NOT the
+                                 derived electricalAngleDeg above -- lets a capture
+                                 show directly whether Hall wiring is backward or a
+                                 sector transition is out of sequence during
+                                 bring-up, rather than only the (possibly
+                                 nonsensical) angle computed downstream of it.
+                                 output.topology=two_phase_analog only; read fresh
+                                 every tick, even across a latched fault (a bring-up
+                                 diagnostic, not control-loop state -- see
+                                 AppGetLastHallSector()). Stale at its 0 initial
+                                 value on any build/run that never drives that
+                                 topology, same convention as electricalAngleDeg
+                                 above. */
+  int32_t  commutationOffsetDeg; /* ConfigStore's commutation.offset_deg -- the
+                                     LEARNED alignment offset (`commutation learn`,
+                                     see Commutation.h/docs/two-phase-drive.md), 0
+                                     until a successful learn attempt persists one.
+                                     Unlike electricalAngleDeg/hallSector above,
+                                     this is a plain config read (AppGetConfig()),
+                                     not gated behind ANALOG_SERVO_TWO_PHASE_DRIVE
+                                     or a live two-phase branch -- it's always 0 on
+                                     a build/env that never ran `commutation learn`,
+                                     same value Protocol.c's `commutation.offset_deg`
+                                     query already reports, just now watchable
+                                     converging over time in a capture instead of
+                                     only point-queryable over the CLI. */
   uint8_t  status;           /* bits0-1 = mode (0 stepdir/1 velocity/2 analog), bit2 =
                                  enabled, bit3 = fault latched, bit4 = reserved (always 0),
                                  bit5 = hardware ENABLE pin asserted, bit6 = synthetic
@@ -40,8 +76,11 @@ typedef struct __attribute__((packed)) {
                                  can trigger on a firmware-sourced marker). */
   uint8_t  faultReason;      /* FaultReason */
   uint8_t  crc8;             /* CRC-8 (poly 0x07, init 0, MSB-first, no reflect/xor-out)
-                                 over bytes 0..30 of this struct -- see Crc8() below and
-                                 docs/monitor-protocol.md. */
+                                 over bytes 0..42 of this struct (sizeof-2; this is a
+                                 hand-maintained comment, not derived -- re-check it on
+                                 every growth, see Crc8() below's call site for the
+                                 actual, always-correct sizeof()-based length) -- see
+                                 Crc8() below and docs/monitor-protocol.md. */
 } MonitorFrame;
 
 static MonitorFrame sFrame;
@@ -50,7 +89,7 @@ static int          sEnabled;
 static volatile int sPending;
 
 /* Rolling flight-recorder history -- see Monitor.h's MonitorDumpHistory()
- * comment. MONITOR_HISTORY_LEN*sizeof(MonitorFrame) = 300*32 = 9600 B. */
+ * comment. MONITOR_HISTORY_LEN*sizeof(MonitorFrame) = 300*44 = 13200 B. */
 #define MONITOR_HISTORY_LEN 300U
 static MonitorFrame sHistory[MONITOR_HISTORY_LEN];
 static uint32_t     sHistoryHead;    /* next write index */
@@ -86,8 +125,14 @@ static uint32_t          sRxTail;   /* read by ProcessRxCommands() only */
 /* Lazily-built, then cached -- see MonitorGetSchemaJson()'s own comment in
  * Monitor.h for why this is computed from the struct instead of hand-typed.
  * Sized generously; BuildSchemaJson() leaves room to confirm no truncation
- * happened (see its own assert-shaped comment below). */
-#define MONITOR_SCHEMA_JSON_BUF_SIZE 1024U
+ * happened (see its own assert-shaped comment below). Bumped 1024->1536 when
+ * hallSector's field entry (on top of electricalAngleDeg's, added just
+ * before it) pushed the real schema string past the old size --
+ * test_protocol.c's test_monitor_schema_json_describes_the_real_frame
+ * caught the silent AppendSchema() truncation via its trailing-'\n' check;
+ * this is the one knob to revisit if a future field addition does the
+ * same again. */
+#define MONITOR_SCHEMA_JSON_BUF_SIZE 1536U
 static char sSchemaJson[MONITOR_SCHEMA_JSON_BUF_SIZE];
 static int  sSchemaBuilt;
 static int  sSchemaPending;   /* '?' seen, not yet sent -- highest priority in MonitorPoll() */
@@ -180,6 +225,12 @@ static void BuildSchemaJson(void) {
                (unsigned)offsetof(MonitorFrame, commandedVelocity));
   AppendSchema(&n, "{\"name\":\"velocity_integral\",\"offset\":%u,\"size\":4,\"type\":\"i32\"},",
                (unsigned)offsetof(MonitorFrame, velocityIntegral));
+  AppendSchema(&n, "{\"name\":\"electrical_angle_deg\",\"offset\":%u,\"size\":4,\"type\":\"i32\"},",
+               (unsigned)offsetof(MonitorFrame, electricalAngleDeg));
+  AppendSchema(&n, "{\"name\":\"hall_sector\",\"offset\":%u,\"size\":4,\"type\":\"i32\"},",
+               (unsigned)offsetof(MonitorFrame, hallSector));
+  AppendSchema(&n, "{\"name\":\"commutation_offset_deg\",\"offset\":%u,\"size\":4,\"type\":\"i32\"},",
+               (unsigned)offsetof(MonitorFrame, commutationOffsetDeg));
   AppendSchema(&n, "{\"name\":\"status\",\"offset\":%u,\"size\":1,\"type\":\"u8\"},",
                (unsigned)offsetof(MonitorFrame, status));
   AppendSchema(&n, "{\"name\":\"fault_reason\",\"offset\":%u,\"size\":1,\"type\":\"u8\"},",
@@ -214,6 +265,9 @@ static void BuildFrame(MonitorFrame *out, uint32_t seq) {
   out->commandedPosition = AppGetLastCommandedPosition();
   out->commandedVelocity = AppGetLastCommandedVelocity();
   out->velocityIntegral = (int32_t)ControlGetVelocityIntegralQ16();
+  out->electricalAngleDeg = AppGetLastElectricalAngleDeg();
+  out->hallSector = AppGetLastHallSector();
+  out->commutationOffsetDeg = AppGetConfig()->commutationOffsetDeg;
   out->status = (uint8_t)(((uint8_t)AppGetServoMode() & 0x3U) |
                            (((uint8_t)AppGetEnabled() & 0x1U) << 2) |
                            (((uint8_t)FaultIsLatched() & 0x1U) << 3) |

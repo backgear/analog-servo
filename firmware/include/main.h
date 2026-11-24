@@ -242,6 +242,27 @@ int32_t AppGetLastTorqueCommand(void);
 int32_t AppGetLastCommandedPosition(void);
 int32_t AppGetLastCommandedVelocity(void);
 
+/* Last electrical angle (degrees, 0..359) Commutation.c computed for
+ * output.topology=two_phase_analog -- see docs/two-phase-drive.md. Stays at
+ * 0 for the lifetime of any build/run that never actually drives the
+ * two-phase branch (default env:analog_servo, or env:analog_servo_two_phase
+ * while not on that topology or while a fault is latched) -- same
+ * "stale, not wrong" convention as the other AppGetLastCommanded*() getters
+ * above. */
+int32_t AppGetLastElectricalAngleDeg(void);
+
+/* Raw Hall sector (0..5, or -1 for HallDecode's own invalid-state marker --
+ * see Hall.h) for telemetry -- output.topology=two_phase_analog only, read
+ * fresh every tick (even across a latched fault -- this is a bring-up
+ * diagnostic, not control-loop state; see docs/two-phase-drive.md). Stays
+ * at 0 for the lifetime of any build/run that never actually drives the
+ * two-phase branch, same "stale, not wrong" convention as
+ * AppGetLastElectricalAngleDeg() above. Lets a capture show directly
+ * whether Hall wiring is backward or a sector transition is out of
+ * sequence, instead of only the already-computed (possibly nonsensical)
+ * electrical angle downstream of it. */
+int32_t AppGetLastHallSector(void);
+
 /* 1kHz control-tick CPU headroom -- software-side version of what
  * TICK_ACTIVE_PIN (gpio.h) lets a logic analyzer measure externally. */
 uint32_t AppGetLastTickCycles(void);   /* whole-ISR DWT cycles, last tick */

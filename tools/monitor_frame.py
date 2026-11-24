@@ -6,9 +6,13 @@ an offline converter) shouldn't have to pull that in too.
 """
 import struct
 
-FRAME_LEN = 32   # was 28 before velocityIntegral (diagnostic, i32) was added
+FRAME_LEN = 44   # was 40 before commutationOffsetDeg (int32) was added, 36
+                 # before that (hallSector), 32 before that
+                 # (electricalAngleDeg), 28 before that (velocityIntegral,
+                 # an INDEPENDENT growth on `main`), 20 before that
+                 # (commandedPosition/commandedVelocity, 2x int32)
 SYNC_BYTE = 0xAA
-STRUCT_FMT = "<BIiiiiiiBBB"
+STRUCT_FMT = "<BIiiiiiiiiiBBB"
 
 MODE_NAMES = ("stepdir", "host", "analog")
 FAULT_REASON_NAMES = ("none", "polarity", "zero_encoder", "endstop", "following_error", "sustained_current")
@@ -30,7 +34,8 @@ def decode_frame(data):
     a dict on a valid frame (CRC-8 checks out and fault_reason is in
     range), None on a false lock."""
     (sync, seq, position, velocity, torque, cmd_position, cmd_velocity, velocity_integral,
-     status, fault_reason, frame_crc) = struct.unpack(STRUCT_FMT, data)
+     electrical_angle_deg, hall_sector, commutation_offset_deg, status, fault_reason,
+     frame_crc) = struct.unpack(STRUCT_FMT, data)
 
     if crc8(data[:-1]) != frame_crc:
         return None
@@ -46,6 +51,19 @@ def decode_frame(data):
         "cmd_velocity": cmd_velocity,
         # Divide by 65536.0 for torque-command units.
         "velocity_integral_q16": velocity_integral,
+        # Commutation.c's electrical angle (degrees, 0..359),
+        # output.topology=two_phase_analog only -- see docs/two-phase-drive.md.
+        # Stale at 0 on any build/run that never drives that topology.
+        "electrical_angle_deg": electrical_angle_deg,
+        # RAW Hall sector (0..5, or -1 for an invalid/wiring-fault state --
+        # see Hall.h), NOT the derived electrical_angle_deg above --
+        # output.topology=two_phase_analog only; stale at 0 otherwise.
+        "hall_sector": hall_sector,
+        # ConfigStore's commutation.offset_deg -- the LEARNED alignment
+        # offset `commutation learn` persists (see docs/two-phase-drive.md).
+        # 0 until a successful learn attempt; not gated to two-phase-active
+        # like the two fields above, since it's a plain config read.
+        "commutation_offset_deg": commutation_offset_deg,
         "mode": MODE_NAMES[status & 0x3],
         "enabled": bool((status >> 2) & 1),
         "fault_latched": bool((status >> 3) & 1),

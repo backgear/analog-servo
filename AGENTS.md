@@ -67,6 +67,13 @@ Unverified/no-bench-hours hardware paths currently live as draft PRs off
 - `l4` — STM32L431 support (base: `monitor-usart`, since L431 has no USB
   at all).
 - `two-phase-output` — Hall-commutated two-phase analog output.
+- `two-phase-output-foc` — same Hall-commutated two-phase analog output,
+  rebuilt on the `simmy`-based branch rather than `main` (adds channel-1
+  telemetry's electrical-angle/Hall-sector/commutation-offset fields, plus
+  Commutation.c/Output.c and main.c's commutation-learn state machine
+  simulation-integration tests against simmy's PMSM FOC plant). Builds and
+  simulation-tests clean against that plant; no bench hours — same
+  unverified status as `two-phase-output` itself, not an improvement on it.
 - `tamagawa-feedback` — Tamagawa absolute-encoder feedback (bring-up
   stage, not a port of working code — the protocol decode itself is
   still unbuilt).

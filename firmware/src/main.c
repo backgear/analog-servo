@@ -182,6 +182,31 @@ static uint32_t sStationaryTicks = 0;
 static int32_t sLastCommandedPosition = 0;
 static int32_t sLastCommandedVelocity = 0;
 
+/* Last electrical angle (degrees, 0..359) the two-phase-output branch's
+ * commutation stage computed -- see Commutation.c. Only ever written inside
+ * the ANALOG_SERVO_TWO_PHASE_DRIVE branch below; stays at its initialized 0
+ * for the lifetime of a build/run that never takes that branch (the
+ * default env:analog_servo build, or env:analog_servo_two_phase while
+ * output.topology isn't two_phase_analog or a fault is latched) -- same
+ * "stale, not wrong" convention as sLastCommandedPosition/Velocity above.
+ * Monitor.c's electricalAngleDeg frame field is only meaningful once this
+ * has actually been driven by that branch at least once. */
+static int32_t sLastElectricalAngleDeg = 0;
+
+/* Raw Hall sector (0..5, or -1 for HallDecode's own invalid-state marker --
+ * see Hall.h) for telemetry -- separate from sLastHallSectorSeen above,
+ * which is learn-attempt-scoped transition-tracking state (reset to -2 at
+ * the start of each commutation-learn/detect-poles attempt) and not
+ * suitable for a continuous telemetry readout. Written every tick the top
+ * of AppControlTick()'s Hall read runs (output.topology=two_phase_analog
+ * only), BEFORE any fault-latch branch -- deliberately visible even while
+ * a fault is latched, since a bad Hall wiring/wrong-sequence bring-up
+ * problem is exactly the kind of fault this is meant to help diagnose.
+ * Stays at its initialized 0 for the lifetime of a build/run that never
+ * takes that branch -- same "stale, not wrong" convention as
+ * sLastElectricalAngleDeg above; see Monitor.c's hallSector frame field. */
+static int32_t sLastHallSectorForTelemetry = 0;
+
 static int32_t sLastAnalogRawAdc = 0;
 static int     sLastAnalogReversed = 0;
 static int     sLastHwEnableAsserted = 0;
@@ -293,6 +318,8 @@ int AppResetPosition(void) {
   AnalogVelocityReset();
   sLastCommandedPosition = sLastCommandedVelocity = 0;
   sLastVelocityActual = sLastTorqueCommand = 0;
+  sLastElectricalAngleDeg = 0;
+  sLastHallSectorForTelemetry = 0;
   sControlSample.position = sControlSample.velocity = sControlSample.torque = 0;
   sControlSample.followingError = 0;
   sControlSample.positionReference = sControlSample.velocityReference = 0;
@@ -620,6 +647,9 @@ void AppControlTick(void) {
     int hb = (HAL_GPIO_ReadPin(HALL_B_GPIO_PORT, HALL_B_PIN) == GPIO_PIN_RESET);
     int hc = (HAL_GPIO_ReadPin(HALL_C_GPIO_PORT, HALL_C_PIN) == GPIO_PIN_RESET);
     hallSector = HallDecode(ha, hb, hc);
+    sLastHallSectorForTelemetry = hallSector;   /* unconditional, even across a latched
+        fault -- see sLastHallSectorForTelemetry's own comment above: this is a
+        bring-up diagnostic, not control-loop state. */
   }
 #endif
 
@@ -885,6 +915,7 @@ void AppControlTick(void) {
           EncoderGetPositionCounts(), sConfig.commutationCountsPerElecRev,
           sConfig.commutationOffsetDeg);
     }
+    sLastElectricalAngleDeg = angleDeg;
     int32_t ia, ib;
     CommutationComputePhases(torqueCommand, angleDeg, &ia, &ib);
     OutputSetTwoPhaseCommand(ia, ib);
@@ -934,6 +965,8 @@ int32_t AppGetLastVelocityActual(void) { return sLastVelocityActual; }
 int32_t AppGetLastTorqueCommand(void) { return sLastTorqueCommand; }
 int32_t AppGetLastCommandedPosition(void) { return sLastCommandedPosition; }
 int32_t AppGetLastCommandedVelocity(void) { return sLastCommandedVelocity; }
+int32_t AppGetLastElectricalAngleDeg(void) { return sLastElectricalAngleDeg; }
+int32_t AppGetLastHallSector(void) { return sLastHallSectorForTelemetry; }
 
 uint32_t AppGetLastTickCycles(void) { return sLastTickCycles; }
 uint32_t AppGetMaxTickCycles(void) { return sMaxTickCycles; }

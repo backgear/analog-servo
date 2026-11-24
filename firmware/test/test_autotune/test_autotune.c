@@ -72,6 +72,8 @@ int32_t AppGetLastVelocityActual(void) { return 0; }
 int32_t AppGetLastTorqueCommand(void) { return 0; }
 int32_t AppGetLastCommandedPosition(void) { return 0; }
 int32_t AppGetLastCommandedVelocity(void) { return 0; }
+int32_t AppGetLastElectricalAngleDeg(void) { return 0; }
+int32_t AppGetLastHallSector(void) { return 0; }
 int        AppGetSignalCycleStart(void) { return 0; }
 static int32_t sPosition = 0;
 int32_t EncoderGetPositionCounts(void) { return sPosition; }

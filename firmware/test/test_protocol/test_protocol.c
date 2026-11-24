@@ -147,6 +147,9 @@ int32_t AppGetLastVelocityActual(void) { return sLastVelocityActual; }
 int32_t AppGetLastTorqueCommand(void) { return sLastTorqueCommand; }
 int32_t AppGetLastCommandedPosition(void) { return sLastCommandedPosition; }
 int32_t AppGetLastCommandedVelocity(void) { return sLastCommandedVelocity; }
+int32_t AppGetLastElectricalAngleDeg(void) { return 0; }   /* no test here drives
+    the two-phase branch -- see test_commutation.c/test_hall.c for that math */
+int32_t AppGetLastHallSector(void) { return 0; }   /* same -- no test here drives it */
 int        AppGetSignalCycleStart(void) { return 0; }
 
 static int      sAutotuneStartRelayCalls = 0;
@@ -641,14 +644,22 @@ static void test_monitor_schema_json_describes_the_real_frame(void) {
   TEST_ASSERT_EQUAL_INT32('{', json[0]);
   /* frame_size/sync come from sizeof(MonitorFrame)/MONITOR_FRAME_SYNC, not
    * hand-typed -- these two literal checks lock in today's known-correct
-   * values (32 bytes, sync 0xAA = 170) as a regression guard, same as the
-   * rest of this file pins other known-good behavior. */
-  TEST_ASSERT_NOT_NULL(strstr(json, "\"frame_size\":32"));
+   * values (44 bytes, sync 0xAA = 170) as a regression guard, same as the
+   * rest of this file pins other known-good behavior. 44, not 32 -- two
+   * independent growths landed on top of each other in the same rebase:
+   * `main`'s velocityIntegral (4 bytes, right after commandedVelocity) and
+   * this branch's electricalAngleDeg/hallSector/commutationOffsetDeg (12
+   * bytes, right after velocityIntegral), so status/faultReason/crc8 shift
+   * by +16 total (see Monitor.c). */
+  TEST_ASSERT_NOT_NULL(strstr(json, "\"frame_size\":44"));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"sync\":170"));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"name\":\"seq\",\"offset\":1,\"size\":4,\"type\":\"u32\""));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"name\":\"torque_command\",\"offset\":13,\"size\":4,\"type\":\"i32\""));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"name\":\"velocity_integral\",\"offset\":25,\"size\":4,\"type\":\"i32\""));
-  TEST_ASSERT_NOT_NULL(strstr(json, "\"name\":\"crc8\",\"offset\":31,\"size\":1,\"type\":\"u8\""));
+  TEST_ASSERT_NOT_NULL(strstr(json, "\"name\":\"electrical_angle_deg\",\"offset\":29,\"size\":4,\"type\":\"i32\""));
+  TEST_ASSERT_NOT_NULL(strstr(json, "\"name\":\"hall_sector\",\"offset\":33,\"size\":4,\"type\":\"i32\""));
+  TEST_ASSERT_NOT_NULL(strstr(json, "\"name\":\"commutation_offset_deg\",\"offset\":37,\"size\":4,\"type\":\"i32\""));
+  TEST_ASSERT_NOT_NULL(strstr(json, "\"name\":\"crc8\",\"offset\":43,\"size\":1,\"type\":\"u8\""));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"cycle_start\":7"));
   /* Same name list Protocol.c's `fault.reason` ENUM_META quotes -- both
    * read FAULT_REASON_NAMES_JSON, so this also guards against the two
@@ -677,7 +688,13 @@ static void test_monitor_cli_schema_matches_inband_schema(void) {
    * same reason) -- channel 0's copy picks up that one extra line ending
    * on top of the schema's own single trailing '\n'; channel 1's in-band
    * reply (tested above) has no such wrapper and is the pure bytes. */
-  char expected[1200];
+  /* Sized generously above MONITOR_SCHEMA_JSON_BUF_SIZE (Monitor.c) + "\r\n"
+   * -- bumped 1100->1536 alongside Monitor.c's own buffer growth
+   * (electricalAngleDeg/hallSector/commutationOffsetDeg, plus `main`'s own
+   * independent velocityIntegral growth) so this test's own local buffer
+   * doesn't silently truncate the schema out from under this comparison
+   * the same way Monitor.c's buffer almost did. */
+  char expected[1536];
   snprintf(expected, sizeof(expected), "%s\r\n", MonitorGetSchemaJson());
   capReset();
   run("monitor schema");
