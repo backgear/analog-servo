@@ -56,7 +56,10 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(len(rows), 23)
             self.assertEqual(rows['balanced-encoder']['parameters']['feedback'], 'encoder')
             self.assertEqual(rows['balanced-model']['parameters']['feedback'], 'model')
-            self.assertIsNone(rows['idle-schedule']['metrics']['holds'][0]['load_settling_seconds'])
+            # Hold 0's load now settles -- the always-live integrator (see
+            # test_simmy_plot.py's test_idle_schedule_...) closes the bias a
+            # hard deadband used to freeze instead of correct.
+            self.assertIsNotNone(rows['idle-schedule']['metrics']['holds'][0]['load_settling_seconds'])
             self.assertIsNone(rows['slow-idle']['metrics']['holds'][-1]['motor_settling_seconds'])
             self.assertGreater(rows['smooth-idle']['metrics']['moving']['motor_rms'], 100)
             text = (out / 'report.md').read_text()
