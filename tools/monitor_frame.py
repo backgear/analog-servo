@@ -6,9 +6,9 @@ an offline converter) shouldn't have to pull that in too.
 """
 import struct
 
-FRAME_LEN = 28   # was 20 before commandedPosition/commandedVelocity (2x int32) were added
+FRAME_LEN = 32   # was 28 before velocityIntegral (diagnostic, i32) was added
 SYNC_BYTE = 0xAA
-STRUCT_FMT = "<BIiiiiiBBB"
+STRUCT_FMT = "<BIiiiiiiBBB"
 
 MODE_NAMES = ("stepdir", "host", "analog")
 FAULT_REASON_NAMES = ("none", "polarity", "zero_encoder", "endstop", "following_error", "sustained_current")
@@ -29,7 +29,7 @@ def decode_frame(data):
     """data is exactly FRAME_LEN bytes starting with the sync byte. Returns
     a dict on a valid frame (CRC-8 checks out and fault_reason is in
     range), None on a false lock."""
-    (sync, seq, position, velocity, torque, cmd_position, cmd_velocity,
+    (sync, seq, position, velocity, torque, cmd_position, cmd_velocity, velocity_integral,
      status, fault_reason, frame_crc) = struct.unpack(STRUCT_FMT, data)
 
     if crc8(data[:-1]) != frame_crc:
@@ -44,6 +44,8 @@ def decode_frame(data):
         "torque": torque,
         "cmd_position": cmd_position,
         "cmd_velocity": cmd_velocity,
+        # Divide by 65536.0 for torque-command units.
+        "velocity_integral_q16": velocity_integral,
         "mode": MODE_NAMES[status & 0x3],
         "enabled": bool((status >> 2) & 1),
         "fault_latched": bool((status >> 3) & 1),

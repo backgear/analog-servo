@@ -1,4 +1,4 @@
-"""Binary monitor-telemetry frame decode: sync byte, CRC-8, 28-byte frames.
+"""Binary monitor-telemetry frame decode: sync byte, CRC-8, 32-byte frames.
 
 Shared by anything that reads the raw binary stream (`Monitor.c`'s wire format,
 see `docs/monitor-protocol.md`) directly, rather than through `monitor_viewer.py`'s
@@ -33,16 +33,17 @@ class Frames:
             if self.buffer[0] != 0xaa:
                 del self.buffer[0]
                 continue
-            if len(self.buffer) < 28:
+            if len(self.buffer) < 32:
                 break
-            frame = self.buffer[:28]
-            if crc8(frame[:-1]) != frame[-1] or frame[26] > 5 or frame[25] & 3 == 3:
+            frame = self.buffer[:32]
+            if crc8(frame[:-1]) != frame[-1] or frame[30] > 5 or frame[29] & 3 == 3:
                 del self.buffer[0]
                 continue
-            del self.buffer[:28]
-            _, seq, pos, vel, torque, ref, rv, status, fault, _ = struct.unpack('<BIiiiiiBBB', frame)
+            del self.buffer[:32]
+            _, seq, pos, vel, torque, ref, rv, integral, status, fault, _ = struct.unpack('<BIiiiiiiBBB', frame)
             # Error validity cannot be inferred for all controller branches from this stream.
             yield seq, dict(position=pos, velocity=vel, torque=torque,
                             reference=ref, reference_velocity=rv, error=ref - pos,
+                            velocity_integral_q16=integral,
                             logic=((status >> 2) & 1) | (bool(fault or status & 8) << 1)
                             | (((status >> 5) & 7) << 2) | (1 << 5))

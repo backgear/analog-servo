@@ -23,13 +23,13 @@ import sigrokdecode as srd
 
 ANN_SYNC, ANN_SEQ, ANN_POSITION, ANN_VELOCITY, ANN_TORQUE, \
     ANN_CMD_POSITION, ANN_CMD_VELOCITY, \
-    ANN_STATUS, ANN_FAULT_REASON, ANN_CRC, ANN_FRAME, ANN_WARNING = range(12)
+    ANN_STATUS, ANN_FAULT_REASON, ANN_CRC, ANN_FRAME, ANN_WARNING, ANN_INTEGRAL = range(13)
 
-FRAME_LEN = 28   # was 20 before commandedPosition/commandedVelocity (2x int32) were added
+FRAME_LEN = 32   # includes diagnostic Q16 velocity integral
 SYNC_BYTE = 0xAA
 
-MODE_NAMES = ('stepdir', 'velocity', 'analog')  # status bits0-1, 2 bits
-FAULT_REASON_NAMES = ('none', 'polarity', 'zero_encoder', 'endstop', 'following_error')
+MODE_NAMES = ('stepdir', 'host', 'analog')  # status bits0-1, 2 bits
+FAULT_REASON_NAMES = ('none', 'polarity', 'zero_encoder', 'endstop', 'following_error', 'sustained_current')
 # Config-tier values (gains, etc.) are deliberately NOT in the frame -- it's
 # real-time state only, see docs/monitor-protocol.md's "Frame" section. Query
 # config via the text CLI instead.
@@ -51,7 +51,7 @@ class Decoder(srd.Decoder):
     id = 'analog_servo_monitor'
     name = 'analog-servo Monitor'
     longname = 'analog-servo Monitor.c binary telemetry'
-    desc = "Decodes analog-servo's 28-byte Monitor.c telemetry frame."
+    desc = "Decodes analog-servo's 32-byte Monitor.c telemetry frame."
     license = 'gplv2+'
     inputs = ['uart']
     outputs = []
@@ -69,11 +69,12 @@ class Decoder(srd.Decoder):
         ('crc', 'CRC-8'),
         ('frame', 'Frame'),
         ('warning', 'Warning'),
+        ('velocity-integral', 'Velocity integral (Q16 torque units)'),
     )
     annotation_rows = (
         ('fields', 'Fields', (ANN_SYNC, ANN_SEQ, ANN_POSITION, ANN_VELOCITY,
                                ANN_TORQUE, ANN_CMD_POSITION, ANN_CMD_VELOCITY,
-                               ANN_STATUS, ANN_FAULT_REASON, ANN_CRC)),
+                               ANN_INTEGRAL, ANN_STATUS, ANN_FAULT_REASON, ANN_CRC)),
         ('frames', 'Frames', (ANN_FRAME,)),
         ('warnings', 'Warnings', (ANN_WARNING,)),
     )
@@ -101,13 +102,13 @@ class Decoder(srd.Decoder):
         mode/fault_reason-range-only check this replaced.'''
         data = bytes(b[2] for b in window)
         (sync, seq, position, velocity, torque, cmd_position, cmd_velocity,
-         status, fault_reason, frame_crc) = struct.unpack_from('<BIiiiiiBBB', data)
+         integral, status, fault_reason, frame_crc) = struct.unpack_from('<BIiiiiiiBBB', data)
 
         if crc8(data[:-1]) != frame_crc:
             return False
 
         mode_bits = status & 0x3
-        if fault_reason >= len(FAULT_REASON_NAMES):
+        if sync != SYNC_BYTE or mode_bits >= len(MODE_NAMES) or fault_reason >= len(FAULT_REASON_NAMES):
             return False
 
         self.putf(window[0][0], window[0][1], ANN_SYNC, 'sync=0x%02X' % sync)
@@ -118,6 +119,8 @@ class Decoder(srd.Decoder):
         self.putf(window[17][0], window[20][1], ANN_CMD_POSITION, 'cmd_position=%d' % cmd_position)
         self.putf(window[21][0], window[24][1], ANN_CMD_VELOCITY, 'cmd_velocity=%d' % cmd_velocity)
 
+        self.putf(window[25][0], window[28][1], ANN_INTEGRAL,
+                  'velocity_integral_q16=%d' % integral)
         mode = MODE_NAMES[mode_bits]
         enabled = (status >> 2) & 1
         fault_latched = (status >> 3) & 1
@@ -125,14 +128,14 @@ class Decoder(srd.Decoder):
         hw_enable = (status >> 5) & 1
         synthetic = (status >> 6) & 1
         cycle_start = (status >> 7) & 1
-        self.putf(window[25][0], window[25][1], ANN_STATUS,
+        self.putf(window[29][0], window[29][1], ANN_STATUS,
                   'mode=%s enabled=%d fault=%d reserved4=%d hw_enable=%d synthetic=%d cycle_start=%d' %
                   (mode, enabled, fault_latched, reserved4, hw_enable, synthetic, cycle_start))
 
         reason = FAULT_REASON_NAMES[fault_reason]
-        self.putf(window[26][0], window[26][1], ANN_FAULT_REASON, 'fault_reason=%s' % reason)
+        self.putf(window[30][0], window[30][1], ANN_FAULT_REASON, 'fault_reason=%s' % reason)
 
-        self.putf(window[27][0], window[27][1], ANN_CRC, 'crc8=0x%02X OK' % frame_crc)
+        self.putf(window[31][0], window[31][1], ANN_CRC, 'crc8=0x%02X OK' % frame_crc)
 
         self.putf(window[0][0], window[-1][1], ANN_FRAME,
                   'seq=%u pos=%d(cmd %d) vel=%d(cmd %d) torque=%d mode=%s%s%s%s' %

@@ -106,4 +106,10 @@ void ControlReset(void);
 int32_t ControlGetLastVelocityTarget(void);
 int32_t ControlGetLastPositionError(void);
 
+/* Diagnostic-only: the raw PI integrator state, Q16 raw-torque units (divide
+ * by 65536 for the same raw torque scale as ControlTick's return value).
+ * Not used by any control path -- added to let the sim and bench telemetry
+ * both expose the integral term's own trajectory for direct comparison. */
+int64_t ControlGetVelocityIntegralQ16(void);
+
 #endif /* CONTROL_H */

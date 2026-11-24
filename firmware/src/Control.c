@@ -174,6 +174,7 @@ void ControlReset(void) {
 
 int32_t ControlGetLastVelocityTarget(void) { return sLastVelocityTarget; }
 int32_t ControlGetLastPositionError(void) { return sLastPositionError; }
+int64_t ControlGetVelocityIntegralQ16(void) { return sVelIntegralQ16; }
 
 static int32_t DiagnosticRoundQ8(int64_t value) {
   int64_t rounded = value >= 0 ? (value + 128) / 256 : -((-value + 128) / 256);

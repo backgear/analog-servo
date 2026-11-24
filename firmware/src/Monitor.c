@@ -1,5 +1,6 @@
 #include "Monitor.h"
 #include "main.h"
+#include "Control.h"
 #include "Encoder.h"
 #include "Fault.h"
 #include "usbd_cdc_composite_if.h"
@@ -26,6 +27,8 @@ typedef struct __attribute__((packed)) {
                                      during polarity learning, raw open-loop signal
                                      torque, disabled, or autotune. */
   int32_t  commandedVelocity;    /* DESIRED, not measured -- same staleness caveats */
+  int32_t  velocityIntegral;     /* Diagnostic PI state in torque units * 65536.
+                                     Bounded by the configured torque clamp. */
   uint8_t  status;           /* bits0-1 = mode (0 stepdir/1 velocity/2 analog), bit2 =
                                  enabled, bit3 = fault latched, bit4 = reserved (always 0),
                                  bit5 = hardware ENABLE pin asserted, bit6 = synthetic
@@ -37,7 +40,7 @@ typedef struct __attribute__((packed)) {
                                  can trigger on a firmware-sourced marker). */
   uint8_t  faultReason;      /* FaultReason */
   uint8_t  crc8;             /* CRC-8 (poly 0x07, init 0, MSB-first, no reflect/xor-out)
-                                 over bytes 0..26 of this struct -- see Crc8() below and
+                                 over bytes 0..30 of this struct -- see Crc8() below and
                                  docs/monitor-protocol.md. */
 } MonitorFrame;
 
@@ -47,7 +50,7 @@ static int          sEnabled;
 static volatile int sPending;
 
 /* Rolling flight-recorder history -- see Monitor.h's MonitorDumpHistory()
- * comment. MONITOR_HISTORY_LEN*sizeof(MonitorFrame) = 300*28 = 8400 B. */
+ * comment. MONITOR_HISTORY_LEN*sizeof(MonitorFrame) = 300*32 = 9600 B. */
 #define MONITOR_HISTORY_LEN 300U
 static MonitorFrame sHistory[MONITOR_HISTORY_LEN];
 static uint32_t     sHistoryHead;    /* next write index */
@@ -175,6 +178,8 @@ static void BuildSchemaJson(void) {
                (unsigned)offsetof(MonitorFrame, commandedPosition));
   AppendSchema(&n, "{\"name\":\"commanded_velocity\",\"offset\":%u,\"size\":4,\"type\":\"i32\"},",
                (unsigned)offsetof(MonitorFrame, commandedVelocity));
+  AppendSchema(&n, "{\"name\":\"velocity_integral\",\"offset\":%u,\"size\":4,\"type\":\"i32\"},",
+               (unsigned)offsetof(MonitorFrame, velocityIntegral));
   AppendSchema(&n, "{\"name\":\"status\",\"offset\":%u,\"size\":1,\"type\":\"u8\"},",
                (unsigned)offsetof(MonitorFrame, status));
   AppendSchema(&n, "{\"name\":\"fault_reason\",\"offset\":%u,\"size\":1,\"type\":\"u8\"},",
@@ -208,6 +213,7 @@ static void BuildFrame(MonitorFrame *out, uint32_t seq) {
   out->torqueCommand  = AppGetLastTorqueCommand();
   out->commandedPosition = AppGetLastCommandedPosition();
   out->commandedVelocity = AppGetLastCommandedVelocity();
+  out->velocityIntegral = (int32_t)ControlGetVelocityIntegralQ16();
   out->status = (uint8_t)(((uint8_t)AppGetServoMode() & 0x3U) |
                            (((uint8_t)AppGetEnabled() & 0x1U) << 2) |
                            (((uint8_t)FaultIsLatched() & 0x1U) << 3) |

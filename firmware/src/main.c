@@ -17,6 +17,7 @@
 #include "Output.h"
 #include "Control.h"
 #include "Ramp.h"
+#include "GainGlide.h"
 #include "PositionMove.h"
 #include "Analog.h"
 #include "Adc.h"
@@ -381,6 +382,54 @@ uint32_t AppAutotuneGetRelayProgressSwitchCount(void) { return AutotuneGetRelayP
 uint32_t AppAutotuneGetRelayProgressSwitchesNeeded(void) { return AutotuneGetRelayProgressSwitchesNeeded(); }
 int32_t  AppAutotuneGetRelayProgressPeakVelocity(void) { return AutotuneGetRelayProgressPeakVelocity(); }
 
+/* The control tick is hardware-fixed today (TIM6/TIM1's PSC/ARR -- see
+ * tim_l1.c/tim_f1.c), not read back from any register here -- this is the
+ * one place in this feature that needs to know it as a number, so it's a
+ * single named constant rather than a literal buried in RlsStart()'s call
+ * site. Update this if that PSC/ARR configuration ever changes the actual
+ * tick rate. */
+#define CONTROL_TICK_HZ 1000U
+
+static uint32_t sRlsGlideMs;   /* stashed verbatim -- AppRlsApply() converts this to ticks
+                                   using CONTROL_TICK_HZ itself once it actually starts a
+                                   glide */
+static GainGlideState sGainGlide;   /* driven once per tick from AppControlTick(), see its
+                                        top -- shared by any future caller of
+                                        GainGlideStart(), today only AppRlsApply() */
+
+void AppRlsStart(int32_t lambdaQ8, uint32_t glideMs) {
+  if (FaultIsLatched()) return;   /* same precondition as relay -- see AppAutotuneStartRelay() */
+  sRlsGlideMs = glideMs;
+  RlsStart(lambdaQ8, CONTROL_TICK_HZ);
+}
+void    AppRlsStop(void) { RlsStop(); }
+int     AppRlsBusy(void) { return RlsIsActive(); }
+AutotuneResult AppRlsGetResult(void) { return RlsGetResult(); }
+int32_t  AppRlsGetKpResultQ8(void) { return RlsGetKpResultQ8(); }
+int32_t  AppRlsGetKiResultQ8(void) { return RlsGetKiResultQ8(); }
+int32_t  AppRlsGetThetaAQ8(void) { return RlsGetThetaAQ8(); }
+int32_t  AppRlsGetThetaBQ8(void) { return RlsGetThetaBQ8(); }
+int64_t  AppRlsGetPTrace(void) { return RlsGetPTrace(); }
+uint32_t AppRlsGetTicksObserved(void) { return RlsGetTicksObserved(); }
+uint32_t AppRlsGetProgressSeq(void) { return RlsGetProgressSeq(); }
+void     AppRlsSetAggressiveness(int32_t extraSquarings) { RlsSetPoleAggressiveness(extraSquarings); }
+int32_t  AppRlsGetAggressiveness(void) { return RlsGetPoleAggressiveness(); }
+void     AppRlsApply(void) {
+  if (RlsGetResult() != AUTOTUNE_RESULT_OK) return;
+  /* position.kp is deliberately untouched -- RLS only ever estimates the
+   * velocity loop's (a, b), see RLS.h. Glide rather than instant-apply
+   * (unlike AppAutotuneApply()'s relay counterpart): a candidate can arrive
+   * mid-move since RLS rides along the normal cascade instead of relay's
+   * dedicated bypass, so an instant jump would step torque output
+   * audibly/mechanically while already tracking. */
+  const ControlGains *current = ControlGetGains();
+  ControlGains target = *current;
+  target.velGainKpQ8 = RlsGetKpResultQ8();
+  target.velGainKiQ8 = RlsGetKiResultQ8();
+  uint32_t totalTicks = (uint32_t)(((uint64_t)sRlsGlideMs * CONTROL_TICK_HZ) / 1000U);
+  GainGlideStart(&sGainGlide, current, &target, totalTicks);
+}
+
 void AppSignalStart(SignalType type, SignalTarget target, int32_t amplitude,
                      uint32_t halfPeriodTicks, uint32_t durationTicks) {
   if (FaultIsLatched()) return;   /* can't run a test signal while faulted */
@@ -421,6 +470,17 @@ static int32_t ComputeCommandedVelocity(void) {
 
 void AppControlTick(void) {
   HAL_GPIO_WritePin(TICK_ACTIVE_GPIO_PORT, TICK_ACTIVE_PIN, GPIO_PIN_SET);
+
+  /* AppRlsApply()'s glide, if one is in flight -- applies regardless of
+   * which mode branch runs below, same as FaultTick()/MonitorTick() at the
+   * bottom of this function. Calls ControlSetGains() directly rather than
+   * AppSetGains()/ApplyConfigToModules(), which would redundantly re-touch
+   * Fault/Output/Analog/Ramp config every single glide tick for no reason
+   * -- only the three gain fields ever change mid-glide. */
+  if (GainGlideActive(&sGainGlide)) {
+    ControlGains glided;
+    if (GainGlideTick(&sGainGlide, &glided)) ControlSetGains(&glided);
+  }
 
   uint32_t nowCycles = DWT->CYCCNT;
   uint32_t dtCycles = nowCycles - sLastCycles;
@@ -537,6 +597,16 @@ void AppControlTick(void) {
     torqueCommand = ControlTickWithReferenceLimitQ8(positionTarget, positionActual, velocityActual,
         referenceVelocityQ8, positionTrajectoryActive ? CommandVelocityLimit() : sConfig.velocityClamp, dtCycles);
     if (sConfig.polarityLearned) torqueCommand *= sConfig.polaritySign;
+    /* Near-passive observer -- sees the same already-polarity-corrected
+     * torque command and measured velocity the cascade above just used,
+     * plus a small self-limiting dither while still converging (see RLS.h's
+     * "Torque dither" section) -- RlsGetDitherTorque() returns exactly 0
+     * once converged or not running, so this is always safe to add in.
+     * Re-clamped afterward since dither can push the command slightly past
+     * the configured torque limits. */
+    torqueCommand += RlsGetDitherTorque();
+    torqueCommand = ClampToTorqueRange(torqueCommand);
+    RlsTick(torqueCommand, velocityActual);
   } else {
     /* Disabled (and not learning): keep the position target accumulator
      * glued to actual position, so re-enabling doesn't yank the axis back

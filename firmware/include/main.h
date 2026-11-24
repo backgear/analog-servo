@@ -15,6 +15,7 @@
 #include "Fault.h"
 #include "Signal.h"
 #include "Autotune.h"
+#include "RLS.h"
 
 void Error_Handler(void);
 void SystemClock_Config(void);
@@ -153,6 +154,42 @@ uint32_t AppAutotuneGetRelayProgressMaxTicks(void);
 uint32_t AppAutotuneGetRelayProgressSwitchCount(void);
 uint32_t AppAutotuneGetRelayProgressSwitchesNeeded(void);
 int32_t  AppAutotuneGetRelayProgressPeakVelocity(void);
+
+/* Online RLS velocity-loop self-tuning (RLS.c) -- the second autotune
+ * method, running as a passive observer alongside the normal cascade
+ * rather than relay's cascade-bypassing exclusive mode (see RLS.h).
+ * Reachable via Protocol.c's `autotune start rls`/`stop`/`apply`, same
+ * surface as relay. glideMs is real milliseconds, stashed verbatim by
+ * AppRlsStart(); AppRlsApply() converts it to ticks using the live control
+ * tick rate at apply time and commits the last AUTOTUNE_RESULT_OK
+ * candidate's Kp/Ki into the live velocity gains via a GainGlide.c ramp
+ * (position.kp untouched -- RLS only ever estimates the velocity loop),
+ * rather than AppAutotuneApply()'s instant jump: a candidate can arrive
+ * mid-move here, so an instant jump would step torque gains audibly/
+ * mechanically while already tracking. */
+void    AppRlsStart(int32_t lambdaQ8, uint32_t glideMs);
+void    AppRlsStop(void);
+int     AppRlsBusy(void);
+AutotuneResult AppRlsGetResult(void);
+int32_t  AppRlsGetKpResultQ8(void);
+int32_t  AppRlsGetKiResultQ8(void);
+int32_t  AppRlsGetThetaAQ8(void);
+int32_t  AppRlsGetThetaBQ8(void);
+int64_t  AppRlsGetPTrace(void);
+uint32_t AppRlsGetTicksObserved(void);
+uint32_t AppRlsGetProgressSeq(void);
+void     AppRlsApply(void);
+
+/* Opt-in pole-placement tuning knob (RLS.c's RlsSetPoleAggressiveness) --
+ * reach for this when the plant's own open-loop pole estimate
+ * (autotune.rls_theta_a) sits close to 1 and the default a^2 target
+ * converges but tracks noticeably weaker than a known-good hand tune; see
+ * RLS.h's own doc comment for the full rationale and the measured sweet
+ * spot. Persists across AppRlsStart() (only RlsInit(), at boot, resets it
+ * to 0) -- a property of the plant, not a per-attempt value, so a host
+ * sets it once via `set autotune.rls_aggressiveness <n>` and leaves it. */
+void    AppRlsSetAggressiveness(int32_t extraSquarings);
+int32_t AppRlsGetAggressiveness(void);
 
 /* Built-in test-signal generator (Signal.c). Refused (no-op) while a hard
  * fault is latched; a fault that latches mid-signal stops it. */
