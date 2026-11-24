@@ -58,7 +58,14 @@ def _simmy_has_pmsm_foc():
 
 _CFLAGS = ['-std=gnu11', '-O0', '-g', '-Wall', '-Wextra',
            '-ffunction-sections', '-fdata-sections',
-           '-D', 'SYSCLK_HZ=32000000', '-D', 'ANALOG_SERVO_TWO_PHASE_DRIVE']
+           '-D', 'SYSCLK_HZ=32000000', '-D', 'ANALOG_SERVO_TWO_PHASE_DRIVE',
+           # main.h now errors without an explicit MCU macro (see
+           # firmware/include/main.h) -- STM32L152xE, not
+           # ANALOG_SERVO_NATIVE_TEST, since Output.c's real two-phase DAC
+           # path (OutputSetTwoPhaseCommand) only exists under
+           # `#if defined(STM32L152xE)`; sim_main_mocks/stm32l1xx_hal.h
+           # shadows the real L1 HAL header via the -I order below.
+           '-D', 'STM32L152xE']
 
 _OUTPUT_RE = re.compile(
     r'ticks=(?P<ticks>\d+)\s+stillBusy=(?P<busy>\d)\s+failed=(?P<failed>\d)\s+'
@@ -96,6 +103,17 @@ class SimmyCommutationLearnIntegrationTest(unittest.TestCase):
             ROOT / 'firmware/src/Autotune.c',
             ROOT / 'firmware/src/Signal.c',
             ROOT / 'firmware/src/Polarity.c',
+            # RLS.c/GainGlide.c: `main`'s online RLS self-tuning estimator,
+            # added after this test was first written (see this project's
+            # own rebase history) -- AppControlTick() now calls
+            # GainGlideActive()/GainGlideTick() unconditionally at the top
+            # of every tick (not just inside the enabled-cascade branch
+            # this test's scenario never takes), so these must link for
+            # real, same as Control.c/Fault.c/Autotune.c/Signal.c/
+            # Polarity.c above -- not stubbed, both are pure HAL-independent
+            # modules like those.
+            ROOT / 'firmware/src/RLS.c',
+            ROOT / 'firmware/src/GainGlide.c',
             SIMMY / 'src/simmy.c',
             SIMMY / 'src/simmy_bldc.c',
         ]

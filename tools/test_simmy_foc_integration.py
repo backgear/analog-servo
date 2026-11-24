@@ -77,6 +77,13 @@ class SimmyFocIntegrationTest(unittest.TestCase):
                 raise FileNotFoundError(f'missing {path}')
         binary = Path(build_dir) / 'simmy_foc_integration'
         cmd = [os.environ.get('CC', 'cc'), '-std=gnu11', '-O2', '-Wall', '-Wextra',
+               # main.h now errors without an explicit MCU macro (see
+               # firmware/include/main.h) -- STM32L152xE, not
+               # ANALOG_SERVO_NATIVE_TEST, since Output.c's real two-phase
+               # DAC path (OutputSetTwoPhaseCommand) only exists under
+               # `#if defined(STM32L152xE)`; sim_foc_mocks/stm32l1xx_hal.h
+               # shadows the real L1 HAL header via the -I order below.
+               '-D', 'STM32L152xE',
                '-I', str(ROOT / 'firmware/test/support/sim_foc_mocks'),
                '-I', str(ROOT / 'firmware/include'),
                '-I', str(SIMMY / 'include'), '-I', str(SIMMY / 'examples'),
