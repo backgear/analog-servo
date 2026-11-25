@@ -10,7 +10,7 @@
  */
 #include <string.h>
 #include <stdlib.h>
-#include <stdio.h>
+#include "TinyFormat.h"
 #include <stddef.h>
 #include "Protocol.h"
 #include "main.h"
@@ -93,7 +93,7 @@ static void txStr(const char *s) {
 static void respKV(const char *key, const char *val) { txStr(key); txStr("="); txStr(val); txStr("\r\n"); }
 static void respKVi(const char *key, int32_t val) {
   char buf[16];
-  snprintf(buf, sizeof(buf), "%ld", (long)val);
+  TinyFormat(buf, sizeof(buf), "%ld", (long)val);
   respKV(key, buf);
 }
 static void respError(const char *reason) { txStr("error="); txStr(reason); txStr("\r\n"); }
@@ -177,46 +177,46 @@ static const char *OutputTopologyName(OutputTopology t) {
   return (t == OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG) ? "two_phase_analog" : "analog_torque";
 }
 
-static void getServoMode(char *b, size_t n) { snprintf(b, n, "%s", ServoModeName(AppGetServoMode())); }
+static void getServoMode(char *b, size_t n) { TinyFormat(b, n, "%s", ServoModeName(AppGetServoMode())); }
 static int  setServoMode(const char *v) {
   if (!strcmp(v, "stepdir"))  return AppSetServoMode(SERVO_MODE_STEPDIR);
   if (!strcmp(v, "host")) return AppSetServoMode(SERVO_MODE_VELOCITY);
   if (!strcmp(v, "analog"))   return AppSetServoMode(SERVO_MODE_ANALOG);
   return -1;
 }
-static void getServoEnabled(char *b, size_t n) { snprintf(b, n, "%d", AppGetEnabled()); }
+static void getServoEnabled(char *b, size_t n) { TinyFormat(b, n, "%d", AppGetEnabled()); }
 static int  setServoEnabled(const char *v) {
   int en;
   if (ParseBool(v, &en) != 0) return -1;
   AppSetEnabled(en);
   return 0;
 }
-static void getServoVelocityCmd(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetCommandedVelocity()); }
+static void getServoVelocityCmd(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetCommandedVelocity()); }
 static int  setServoVelocityCmd(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0) return -1;
   AppSetCommandedVelocity(val);
   return 0;
 }
-static void getServoPositionCmd(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetPositionCmd()); }
+static void getServoPositionCmd(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetPositionCmd()); }
 static int  setServoPositionCmd(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0) return -1;
   AppSetPositionCmd(val);
   return 0;
 }
-static void getServoPosition(char *b, size_t n) { snprintf(b, n, "%ld", (long)EncoderGetPositionCounts()); }
-static void getServoVelocity(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetLastVelocityActual()); }
+static void getServoPosition(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)EncoderGetPositionCounts()); }
+static void getServoVelocity(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetLastVelocityActual()); }
 static void getFollowingError(char *b, size_t n) {
   AppControlSample sample;
   AppGetControlSample(&sample);
-  snprintf(b, n, "%ld", (long)sample.followingError);
+  TinyFormat(b, n, "%ld", (long)sample.followingError);
 }
 /* These signals all come from the completed control-tick snapshot. */
 #define SAMPLE_GETTER(name, member) \
 static void name(char *b, size_t n) { \
   AppControlSample sample; AppGetControlSample(&sample); \
-  snprintf(b, n, "%ld", (long)sample.member); \
+  TinyFormat(b, n, "%ld", (long)sample.member); \
 }
 SAMPLE_GETTER(getPositionReference, positionReference)
 SAMPLE_GETTER(getVelocityReference, velocityReference)
@@ -225,12 +225,12 @@ SAMPLE_GETTER(getVelocityError, velocityError)
 SAMPLE_GETTER(getVelocityControlError, velocityControlError)
 static void getControlValid(char *b, size_t n) {
   AppControlSample sample; AppGetControlSample(&sample);
-  snprintf(b, n, "%u", (sample.flags & 8U) != 0);
+  TinyFormat(b, n, "%u", (sample.flags & 8U) != 0);
 }
 
-static void getServoTorqueCmd(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetLastTorqueCommand()); }
+static void getServoTorqueCmd(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetLastTorqueCommand()); }
 
-static void getGainsPosP(char *b, size_t n)   { snprintf(b, n, "%ld", (long)AppGetConfig()->posGainQ8); }
+static void getGainsPosP(char *b, size_t n)   { TinyFormat(b, n, "%ld", (long)AppGetConfig()->posGainQ8); }
 static int  setGainsPosP(const char *v) {
   int32_t val;
   /* A negative gain here is positive feedback (position/velocity error pushes the command
@@ -240,67 +240,67 @@ static int  setGainsPosP(const char *v) {
   AppSetGains(val, AppGetConfig()->velGainKpQ8, AppGetConfig()->velGainKiQ8);
   return 0;
 }
-static void getGainsVelKp(char *b, size_t n)  { snprintf(b, n, "%ld", (long)AppGetConfig()->velGainKpQ8); }
+static void getGainsVelKp(char *b, size_t n)  { TinyFormat(b, n, "%ld", (long)AppGetConfig()->velGainKpQ8); }
 static int  setGainsVelKp(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0) return -1;   /* see setGainsPosP's comment */
   AppSetGains(AppGetConfig()->posGainQ8, val, AppGetConfig()->velGainKiQ8);
   return 0;
 }
-static void getGainsVelKi(char *b, size_t n)  { snprintf(b, n, "%ld", (long)AppGetConfig()->velGainKiQ8); }
+static void getGainsVelKi(char *b, size_t n)  { TinyFormat(b, n, "%ld", (long)AppGetConfig()->velGainKiQ8); }
 static int  setGainsVelKi(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0) return -1;   /* see setGainsPosP's comment */
   AppSetGains(AppGetConfig()->posGainQ8, AppGetConfig()->velGainKpQ8, val);
   return 0;
 }
-static void getVelocityClamp(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->velocityClamp); }
+static void getVelocityClamp(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->velocityClamp); }
 static int  setVelocityClamp(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0) return -1;
   AppSetVelocityClamp(val);
   return 0;
 }
-static void getPositionMoveFeedforward(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->positionMoveFeedforwardQ8); }
+static void getPositionMoveFeedforward(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->positionMoveFeedforwardQ8); }
 static int setPositionMoveFeedforward(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0 || val > 256) return -1;
   AppSetPositionMoveFeedforward(val); return 0;
 }
-static void getAccelerationFeedforward(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->accelerationFeedforwardQ8); }
+static void getAccelerationFeedforward(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->accelerationFeedforwardQ8); }
 static int setAccelerationFeedforward(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0 || val > 8000000) return -1;
   AppSetAccelerationFeedforward(val); return 0;
 }
-static void getVelocityJerk(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->velocityJerk); }
+static void getVelocityJerk(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->velocityJerk); }
 static int setVelocityJerk(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0 || val > 10000000) return -1;
   AppSetVelocityJerk(val); return 0;
 }
-static void getVelocityFilterShift(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->velocityFilterShift); }
+static void getVelocityFilterShift(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->velocityFilterShift); }
 static int setVelocityFilterShift(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0 || val > 4) return -1;
   AppSetVelocityFilterShift(val);
   return 0;
 }
-static void getVelocityErrorDeadband(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->velocityErrorDeadbandCounts); }
+static void getVelocityErrorDeadband(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->velocityErrorDeadbandCounts); }
 static int setVelocityErrorDeadband(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0) return -1;
   AppSetVelocityErrorDeadband(val);
   return 0;
 }
-static void getCommandVelocityClamp(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->commandVelocityClamp); }
+static void getCommandVelocityClamp(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->commandVelocityClamp); }
 static int setCommandVelocityClamp(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0) return -1;
   AppSetCommandVelocityClamp(val);
   return 0;
 }
-static void getRampAccel(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->rampAccelCountsPerTickPerSec); }
+static void getRampAccel(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->rampAccelCountsPerTickPerSec); }
 static int  setRampAccel(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val <= 0) return -1;   /* 0/negative would mean "never ramp" --
@@ -309,14 +309,14 @@ static int  setRampAccel(const char *v) {
   AppSetRampAccel(val);
   return 0;
 }
-static void getTorqueClampMin(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->torqueClampMin); }
+static void getTorqueClampMin(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->torqueClampMin); }
 static int  setTorqueClampMin(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0) return -1;
   AppSetTorqueClamp(val, AppGetConfig()->torqueClampMax);
   return 0;
 }
-static void getTorqueClampMax(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->torqueClampMax); }
+static void getTorqueClampMax(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->torqueClampMax); }
 static int  setTorqueClampMax(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0) return -1;
@@ -324,7 +324,7 @@ static int  setTorqueClampMax(const char *v) {
   return 0;
 }
 
-static void getOutputZeroTrim(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->zeroTrim); }
+static void getOutputZeroTrim(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->zeroTrim); }
 static int  setOutputZeroTrim(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0) return -1;
@@ -335,7 +335,7 @@ static int  setOutputZeroTrim(const char *v) {
 /* output.topology/commutation.* -- `two-phase-output` draft-PR branch, see
  * docs/two-phase-drive.md. Not bench-verified -- needs real Hall-sensor
  * hardware nobody has yet. */
-static void getOutputTopology(char *b, size_t n) { snprintf(b, n, "%s", OutputTopologyName(AppGetOutputTopology())); }
+static void getOutputTopology(char *b, size_t n) { TinyFormat(b, n, "%s", OutputTopologyName(AppGetOutputTopology())); }
 static int  setOutputTopology(const char *v) {
   /* AppSetOutputTopology() rejects two_phase_analog on the default
    * `analog_servo` build (ANALOG_SERVO_TWO_PHASE_DRIVE not defined) --
@@ -344,67 +344,67 @@ static int  setOutputTopology(const char *v) {
   if (!strcmp(v, "two_phase_analog")) return AppSetOutputTopology(OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG);
   return -1;
 }
-static void getCommutationPolePairs(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->commutationPolePairs); }
+static void getCommutationPolePairs(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->commutationPolePairs); }
 static int  setCommutationPolePairs(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val <= 0) return -1;
   AppSetCommutationConfig(val, AppGetConfig()->commutationCountsPerElecRev);
   return 0;
 }
-static void getCommutationCountsPerElecRev(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->commutationCountsPerElecRev); }
+static void getCommutationCountsPerElecRev(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->commutationCountsPerElecRev); }
 static int  setCommutationCountsPerElecRev(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val <= 0) return -1;
   AppSetCommutationConfig(AppGetConfig()->commutationPolePairs, val);
   return 0;
 }
-static void getCommutationLearned(char *b, size_t n) { snprintf(b, n, "%d", AppGetConfig()->commutationLearned); }
-static void getCommutationOffsetDeg(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->commutationOffsetDeg); }
-static void getCommutationLearnActive(char *b, size_t n) { snprintf(b, n, "%d", AppCommutationLearnBusy()); }
-static void getCommutationLearnFailed(char *b, size_t n) { snprintf(b, n, "%d", AppGetCommutationLearnFailed()); }
-static void getCommutationDetectPolesActive(char *b, size_t n) { snprintf(b, n, "%d", AppCommutationDetectPolesBusy()); }
-static void getCommutationDetectPolesFailed(char *b, size_t n) { snprintf(b, n, "%d", AppGetCommutationDetectPolesFailed()); }
+static void getCommutationLearned(char *b, size_t n) { TinyFormat(b, n, "%d", AppGetConfig()->commutationLearned); }
+static void getCommutationOffsetDeg(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->commutationOffsetDeg); }
+static void getCommutationLearnActive(char *b, size_t n) { TinyFormat(b, n, "%d", AppCommutationLearnBusy()); }
+static void getCommutationLearnFailed(char *b, size_t n) { TinyFormat(b, n, "%d", AppGetCommutationLearnFailed()); }
+static void getCommutationDetectPolesActive(char *b, size_t n) { TinyFormat(b, n, "%d", AppCommutationDetectPolesBusy()); }
+static void getCommutationDetectPolesFailed(char *b, size_t n) { TinyFormat(b, n, "%d", AppGetCommutationDetectPolesFailed()); }
 
-static void getDiagTickCycles(char *b, size_t n)   { snprintf(b, n, "%lu", (unsigned long)AppGetLastTickCycles()); }
-static void getDiagTickCyclesMax(char *b, size_t n) { snprintf(b, n, "%lu", (unsigned long)AppGetMaxTickCycles()); }
-static void getDiagTickLoadPct(char *b, size_t n)  { snprintf(b, n, "%ld", (long)AppGetLastTickLoadPct()); }
+static void getDiagTickCycles(char *b, size_t n)   { TinyFormat(b, n, "%lu", (unsigned long)AppGetLastTickCycles()); }
+static void getDiagTickCyclesMax(char *b, size_t n) { TinyFormat(b, n, "%lu", (unsigned long)AppGetMaxTickCycles()); }
+static void getDiagTickLoadPct(char *b, size_t n)  { TinyFormat(b, n, "%ld", (long)AppGetLastTickLoadPct()); }
 
-static void getAnalogScale(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->analogVelocityScaleQ8); }
+static void getAnalogScale(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->analogVelocityScaleQ8); }
 static int  setAnalogScale(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0) return -1;
   AppSetAnalogVelocityConfig(val, AppGetConfig()->analogVelocityHysteresisCounts);
   return 0;
 }
-static void getAnalogHysteresis(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->analogVelocityHysteresisCounts); }
+static void getAnalogHysteresis(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->analogVelocityHysteresisCounts); }
 static int  setAnalogHysteresis(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0) return -1;
   AppSetAnalogVelocityConfig(AppGetConfig()->analogVelocityScaleQ8, val);
   return 0;
 }
-static void getAnalogRawAdc(char *b, size_t n)  { snprintf(b, n, "%ld", (long)AppGetAnalogRawAdc()); }
-static void getAnalogReversed(char *b, size_t n) { snprintf(b, n, "%d", AppGetAnalogReversed()); }
+static void getAnalogRawAdc(char *b, size_t n)  { TinyFormat(b, n, "%ld", (long)AppGetAnalogRawAdc()); }
+static void getAnalogReversed(char *b, size_t n) { TinyFormat(b, n, "%d", AppGetAnalogReversed()); }
 
-static void getEnablePinAsserted(char *b, size_t n) { snprintf(b, n, "%d", AppGetHwEnableAsserted()); }
+static void getEnablePinAsserted(char *b, size_t n) { TinyFormat(b, n, "%d", AppGetHwEnableAsserted()); }
 
-static void getFollowingErrorLimit(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->followingErrorLimitCounts); }
+static void getFollowingErrorLimit(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->followingErrorLimitCounts); }
 static int  setFollowingErrorLimit(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0) return -1;
   AppSetFollowingErrorConfig(val, AppGetConfig()->followingErrorHardFault);
   return 0;
 }
-static void getFollowingErrorHardFault(char *b, size_t n) { snprintf(b, n, "%d", AppGetConfig()->followingErrorHardFault); }
+static void getFollowingErrorHardFault(char *b, size_t n) { TinyFormat(b, n, "%d", AppGetConfig()->followingErrorHardFault); }
 static int  setFollowingErrorHardFault(const char *v) {
   int en;
   if (ParseBool(v, &en) != 0) return -1;
   AppSetFollowingErrorConfig(AppGetConfig()->followingErrorLimitCounts, en);
   return 0;
 }
-static void getFollowingErrorActive(char *b, size_t n) { snprintf(b, n, "%d", FaultGetFollowingErrorActive()); }
+static void getFollowingErrorActive(char *b, size_t n) { TinyFormat(b, n, "%d", FaultGetFollowingErrorActive()); }
 
-static void getSustainedCurrentMinTorque(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->sustainedCurrentMinTorque); }
+static void getSustainedCurrentMinTorque(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->sustainedCurrentMinTorque); }
 static int  setSustainedCurrentMinTorque(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0) return -1;   /* 0 == disabled, same convention
@@ -412,7 +412,7 @@ static int  setSustainedCurrentMinTorque(const char *v) {
   AppSetSustainedCurrentConfig(val, AppGetConfig()->sustainedCurrentWindowTicks);
   return 0;
 }
-static void getSustainedCurrentWindowTicks(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->sustainedCurrentWindowTicks); }
+static void getSustainedCurrentWindowTicks(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->sustainedCurrentWindowTicks); }
 static int  setSustainedCurrentWindowTicks(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val <= 0) return -1;
@@ -420,22 +420,22 @@ static int  setSustainedCurrentWindowTicks(const char *v) {
   return 0;
 }
 
-static void getFaultLatched(char *b, size_t n) { snprintf(b, n, "%d", FaultIsLatched()); }
-static void getFaultReason(char *b, size_t n)  { snprintf(b, n, "%s", FaultReasonName(FaultGetReason())); }
+static void getFaultLatched(char *b, size_t n) { TinyFormat(b, n, "%d", FaultIsLatched()); }
+static void getFaultReason(char *b, size_t n)  { TinyFormat(b, n, "%s", FaultReasonName(FaultGetReason())); }
 
-static void getPolarityLearned(char *b, size_t n) { snprintf(b, n, "%d", AppGetConfig()->polarityLearned); }
-static void getPolaritySign(char *b, size_t n)     { snprintf(b, n, "%d", AppGetConfig()->polaritySign); }
-static void getPolarityLearnFailed(char *b, size_t n) { snprintf(b, n, "%d", AppGetPolarityLearnFailed()); }
-static void getPolarityLastMovedCounts(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetPolarityLearnMovedCounts()); }
+static void getPolarityLearned(char *b, size_t n) { TinyFormat(b, n, "%d", AppGetConfig()->polarityLearned); }
+static void getPolaritySign(char *b, size_t n)     { TinyFormat(b, n, "%d", AppGetConfig()->polaritySign); }
+static void getPolarityLearnFailed(char *b, size_t n) { TinyFormat(b, n, "%d", AppGetPolarityLearnFailed()); }
+static void getPolarityLastMovedCounts(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetPolarityLearnMovedCounts()); }
 
-static void getEncoderZSeen(char *b, size_t n) { snprintf(b, n, "%d", EncoderZWasSeenSinceEnable()); }
+static void getEncoderZSeen(char *b, size_t n) { TinyFormat(b, n, "%d", EncoderZWasSeenSinceEnable()); }
 
-static void getSignalActive(char *b, size_t n) { snprintf(b, n, "%d", AppGetSignalActive()); }
-static void getSignalType(char *b, size_t n)   { snprintf(b, n, "%s", SignalTypeName(AppGetSignalType())); }
-static void getSignalTarget(char *b, size_t n) { snprintf(b, n, "%s", SignalTargetName(AppGetSignalTarget())); }
+static void getSignalActive(char *b, size_t n) { TinyFormat(b, n, "%d", AppGetSignalActive()); }
+static void getSignalType(char *b, size_t n)   { TinyFormat(b, n, "%s", SignalTypeName(AppGetSignalType())); }
+static void getSignalTarget(char *b, size_t n) { TinyFormat(b, n, "%s", SignalTargetName(AppGetSignalTarget())); }
 
-static void getMonitorActive(char *b, size_t n) { snprintf(b, n, "%d", MonitorGetEnabled()); }
-static void getMonitorFreezePostTicks(char *b, size_t n) { snprintf(b, n, "%lu", (unsigned long)MonitorGetFreezePostTicks()); }
+static void getMonitorActive(char *b, size_t n) { TinyFormat(b, n, "%d", MonitorGetEnabled()); }
+static void getMonitorFreezePostTicks(char *b, size_t n) { TinyFormat(b, n, "%lu", (unsigned long)MonitorGetFreezePostTicks()); }
 static int  setMonitorFreezePostTicks(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0) return -1;
@@ -466,33 +466,33 @@ static int RlsIsTheActiveEngine(void) {
   if (AppAutotuneBusy()) return 0;
   return AppRlsGetResult() != AUTOTUNE_RESULT_NONE;
 }
-static void getAutotuneActive(char *b, size_t n) { snprintf(b, n, "%d", AppAutotuneBusy() || AppRlsBusy()); }
+static void getAutotuneActive(char *b, size_t n) { TinyFormat(b, n, "%d", AppAutotuneBusy() || AppRlsBusy()); }
 static void getAutotuneMethod(char *b, size_t n) {
   AutotuneMethod m = RlsIsTheActiveEngine() ? AUTOTUNE_METHOD_RLS : AppAutotuneGetMethod();
-  snprintf(b, n, "%s", AutotuneMethodName(m));
+  TinyFormat(b, n, "%s", AutotuneMethodName(m));
 }
 static void getAutotuneResult(char *b, size_t n) {
   AutotuneResult r = RlsIsTheActiveEngine() ? AppRlsGetResult() : AppAutotuneGetResult();
-  snprintf(b, n, "%s", AutotuneResultName(r));
+  TinyFormat(b, n, "%s", AutotuneResultName(r));
 }
 static void getAutotuneKpResult(char *b, size_t n) {
   int32_t kp = RlsIsTheActiveEngine() ? AppRlsGetKpResultQ8() : AppAutotuneGetKpResultQ8();
-  snprintf(b, n, "%ld", (long)kp);
+  TinyFormat(b, n, "%ld", (long)kp);
 }
 static void getAutotuneKiResult(char *b, size_t n) {
   int32_t ki = RlsIsTheActiveEngine() ? AppRlsGetKiResultQ8() : AppAutotuneGetKiResultQ8();
-  snprintf(b, n, "%ld", (long)ki);
+  TinyFormat(b, n, "%ld", (long)ki);
 }
-static void getAutotunePosPResult(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppAutotuneGetPosPResultQ8()); }
-static void getAutotunePeriod(char *b, size_t n) { snprintf(b, n, "%lu", (unsigned long)AppAutotuneGetMeasuredPeriodTicks()); }
-static void getAutotuneGain(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppAutotuneGetMeasuredGainQ8()); }
+static void getAutotunePosPResult(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppAutotuneGetPosPResultQ8()); }
+static void getAutotunePeriod(char *b, size_t n) { TinyFormat(b, n, "%lu", (unsigned long)AppAutotuneGetMeasuredPeriodTicks()); }
+static void getAutotuneGain(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppAutotuneGetMeasuredGainQ8()); }
 
-static void getRlsActive(char *b, size_t n) { snprintf(b, n, "%d", AppRlsBusy()); }
-static void getRlsThetaA(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppRlsGetThetaAQ8()); }
-static void getRlsThetaB(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppRlsGetThetaBQ8()); }
-static void getRlsPTrace(char *b, size_t n) { snprintf(b, n, "%lld", (long long)AppRlsGetPTrace()); }
-static void getRlsTicks(char *b, size_t n) { snprintf(b, n, "%lu", (unsigned long)AppRlsGetTicksObserved()); }
-static void getRlsAggressiveness(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppRlsGetAggressiveness()); }
+static void getRlsActive(char *b, size_t n) { TinyFormat(b, n, "%d", AppRlsBusy()); }
+static void getRlsThetaA(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppRlsGetThetaAQ8()); }
+static void getRlsThetaB(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppRlsGetThetaBQ8()); }
+static void getRlsPTrace(char *b, size_t n) { TinyFormat(b, n, "%lld", (long long)AppRlsGetPTrace()); }
+static void getRlsTicks(char *b, size_t n) { TinyFormat(b, n, "%lu", (unsigned long)AppRlsGetTicksObserved()); }
+static void getRlsAggressiveness(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppRlsGetAggressiveness()); }
 static int setRlsAggressiveness(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0) return -1;
@@ -626,7 +626,7 @@ static void txJsonString(const char *value) {
     char escaped[7];
     size_t len;
     if (*p == '"' || *p == '\\') { escaped[0] = '\\'; escaped[1] = (char)*p; len = 2; }
-    else if (*p < 32) { snprintf(escaped, sizeof(escaped), "\\u%04x", (unsigned)*p); len = 6; }
+    else if (*p < 32) { TinyFormat(escaped, sizeof(escaped), "\\u%04x", (unsigned)*p); len = 6; }
     else { escaped[0] = (char)*p; len = 1; }
     if (n + len > sizeof(buffer)) { sActive->tx((uint8_t *)buffer, (uint16_t)n); n = 0; }
     memcpy(buffer + n, escaped, len); n += len;
@@ -695,7 +695,7 @@ static void cmdSample(int argc, char **argv) {
   AppControlSample sample;
   char buffer[96];
   AppGetControlSample(&sample);
-  snprintf(buffer, sizeof(buffer), "sample=%lu,%ld,%ld,%ld,%ld,%lu",
+  TinyFormat(buffer, sizeof(buffer), "sample=%lu,%ld,%ld,%ld,%ld,%lu",
            (unsigned long)sample.tick, (long)sample.position, (long)sample.velocity,
            (long)sample.torque, (long)sample.followingError, (unsigned long)sample.flags);
   txStr(buffer); txStr("\r\n");
@@ -1049,7 +1049,7 @@ static void PollAutotuneProgress(void) {
    * AUTOTUNE_HYSTERESIS_COUNTS=2) the mechanism isn't producing a
    * velocity signal relay can switch on at all. */
   char buf[96];
-  int n = snprintf(buf, sizeof(buf),
+  int n = TinyFormat(buf, sizeof(buf),
                 "autotune.progress ticks=%lu/%lu switches=%lu/%lu peak_vel=%ld\r\n",
                 (unsigned long)AppAutotuneGetRelayProgressTicksElapsed(),
                 (unsigned long)AppAutotuneGetRelayProgressMaxTicks(),
@@ -1078,7 +1078,7 @@ static void PollRlsProgress(void) {
   sLastPrintedRlsProgressSeq = seq;
 
   char buf[96];
-  int n = snprintf(buf, sizeof(buf),
+  int n = TinyFormat(buf, sizeof(buf),
                 "autotune.rls_progress ticks=%lu a=%ld b=%ld kp=%ld ki=%ld p_trace=%lld\r\n",
                 (unsigned long)AppRlsGetTicksObserved(),
                 (long)AppRlsGetThetaAQ8(), (long)AppRlsGetThetaBQ8(),

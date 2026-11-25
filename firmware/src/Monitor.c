@@ -7,7 +7,7 @@
 #include "usbd_cdc_composite.h"
 #include <stdint.h>
 #include <stddef.h>
-#include <stdio.h>
+#include "TinyFormat.h"
 #include <stdarg.h>
 #include <string.h>
 
@@ -208,7 +208,7 @@ static void AppendSchema(size_t *n, const char *fmt, ...) {
   if (*n >= sizeof(sSchemaJson)) return;
   va_list ap;
   va_start(ap, fmt);
-  int wrote = vsnprintf(sSchemaJson + *n, sizeof(sSchemaJson) - *n, fmt, ap);
+  int wrote = TinyVFormat(sSchemaJson + *n, sizeof(sSchemaJson) - *n, fmt, ap);
   va_end(ap);
   if (wrote > 0) *n += (size_t)wrote;
   if (*n > sizeof(sSchemaJson)) *n = sizeof(sSchemaJson);   /* vsnprintf's return value
