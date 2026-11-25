@@ -114,9 +114,25 @@ int32_t AppGetLastVelocityActual(void) { return 0; }
 int32_t AppGetLastTorqueCommand(void) { return 0; }
 int32_t AppGetLastCommandedPosition(void) { return 0; }
 int32_t AppGetLastCommandedVelocity(void) { return 0; }
+int32_t AppGetLastElectricalAngleDeg(void) { return 0; }
+int32_t AppGetLastHallSector(void) { return 0; }
 int        AppGetSignalCycleStart(void) { return 0; }
 int32_t EncoderGetPositionCounts(void) { return 0; }
 int     EncoderZWasSeenSinceEnable(void) { return 0; }
+/* output.topology / commutation.* stubs -- Protocol.c (linked into every
+ * native test, see the comment above) calls these for its
+ * output.topology/commutation.* CLI commands; this suite never exercises
+ * two-phase output, so degenerate stand-ins are enough, same pattern as
+ * test_hall.c/test_commutation.c. */
+OutputTopology AppGetOutputTopology(void) { return OUTPUT_TOPOLOGY_ANALOG_TORQUE; }
+int            AppSetOutputTopology(OutputTopology t) { (void)t; return 0; }
+void    AppSetCommutationConfig(int32_t p, int32_t c) { (void)p; (void)c; }
+void    AppCommutationLearn(void) {}
+int     AppCommutationLearnBusy(void) { return 0; }
+int     AppGetCommutationLearnFailed(void) { return 0; }
+void    AppCommutationDetectPoles(int32_t encoderCpr) { (void)encoderCpr; }
+int     AppCommutationDetectPolesBusy(void) { return 0; }
+int     AppGetCommutationDetectPolesFailed(void) { return 0; }
 void    UsartTransmit(const uint8_t *data, uint16_t len) { (void)data; (void)len; }
 uint8_t CDCComposite_Transmit_Ch0(uint8_t *Buf, uint16_t Len) { (void)Buf; (void)Len; return USBD_OK; }
 USBD_HandleTypeDef hUsbDeviceFS;

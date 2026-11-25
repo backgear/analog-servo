@@ -149,6 +149,29 @@
 #define BRAKE_RELEASE_GPIO_PORT GPIOA
 #define BRAKE_RELEASE_PIN        GPIO_PIN_8
 
+/* Hall sensor inputs, output.topology=two_phase_analog only -- see
+ * docs/two-phase-drive.md (`two-phase-output` draft-PR branch). Polled,
+ * not EXTI -- see that doc's "EXTI vs. polling" analysis. Pull-up assumed;
+ * NOT confirmed against a real Hall sensor's actual output type. Harmless
+ * to configure even on the default `analog_servo` build, which never
+ * reads them -- AppSetOutputTopology() rejects two_phase_analog there. */
+#define HALL_A_GPIO_PORT GPIOC
+#define HALL_A_PIN        GPIO_PIN_0
+#define HALL_B_GPIO_PORT GPIOC
+#define HALL_B_PIN        GPIO_PIN_1
+#define HALL_C_GPIO_PORT GPIOC
+#define HALL_C_PIN        GPIO_PIN_2
+
+/* Phase sign bits, output.topology=two_phase_analog's magnitude+sign-switch
+ * scheme -- see docs/two-phase-drive.md. Each drives an external CD4053's
+ * SEL pins. Active-HIGH = negative, arbitrary convention -- flip
+ * PhaseSignWrite()'s sense if the real switch needs the opposite. A real
+ * board modification, not yet built on any board. */
+#define PHASE_A_SIGN_GPIO_PORT GPIOB
+#define PHASE_A_SIGN_PIN        GPIO_PIN_2
+#define PHASE_B_SIGN_GPIO_PORT GPIOB
+#define PHASE_B_SIGN_PIN        GPIO_PIN_3
+
 void GpioInit(void);
 void LedWrite(int on);
 
@@ -164,5 +187,9 @@ void ZeroClampWrite(int asserted);
  * commands it held/engaged -- the boot-time default. Pin polarity is
  * resolved in gpio_l1.c once the downstream driver is chosen. */
 void BrakeReleaseWrite(int released);
+
+/* channel 0 = phase A, 1 = phase B. Active-high = negative -- see
+ * PHASE_A_SIGN_PIN's comment. output.topology=two_phase_analog only. */
+void PhaseSignWrite(int channel, int negative);
 
 #endif /* GPIO_H */

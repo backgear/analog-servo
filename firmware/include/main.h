@@ -16,6 +16,7 @@
 #include "Signal.h"
 #include "Autotune.h"
 #include "RLS.h"
+#include "Output.h"   /* OutputTopology -- see AppGetOutputTopology() below */
 
 void Error_Handler(void);
 void SystemClock_Config(void);
@@ -36,6 +37,24 @@ int       AppSetServoMode(ServoMode mode);
 int  AppGetEnabled(void);
 void AppSetEnabled(int enabled);   /* enabling clears Control.c's integrator; does NOT
                                        auto-clear a latched fault */
+
+/* output.topology (`two-phase-output` draft-PR branch) -- see Output.h and
+ * docs/two-phase-drive.md. Independent of ServoMode: any mode can pair with
+ * either topology. */
+OutputTopology AppGetOutputTopology(void);
+int  AppSetOutputTopology(OutputTopology topology);
+void AppSetCommutationConfig(int32_t polePairs, int32_t countsPerElecRev);
+
+/* One-time bench/commissioning steps for output.topology=two_phase_analog --
+ * same "non-blocking, don't silently persist a bad result" shape as
+ * AppPolarityLearn() below. Both are no-ops (always idle/failed) unless
+ * output.topology is already two_phase_analog. */
+void AppCommutationLearn(void);
+int  AppCommutationLearnBusy(void);
+int  AppGetCommutationLearnFailed(void);
+void AppCommutationDetectPoles(int32_t encoderCpr);
+int  AppCommutationDetectPolesBusy(void);
+int  AppGetCommutationDetectPolesFailed(void);
 
 /* Mode B (velocity command) input -- host-commanded velocity target, ramped
  * by Ramp.c before feeding the shared Control.c cascade. Counts/tick. Also
@@ -222,6 +241,27 @@ int32_t AppGetLastVelocityActual(void);
 int32_t AppGetLastTorqueCommand(void);
 int32_t AppGetLastCommandedPosition(void);
 int32_t AppGetLastCommandedVelocity(void);
+
+/* Last electrical angle (degrees, 0..359) Commutation.c computed for
+ * output.topology=two_phase_analog -- see docs/two-phase-drive.md. Stays at
+ * 0 for the lifetime of any build/run that never actually drives the
+ * two-phase branch (default env:analog_servo, or env:analog_servo_two_phase
+ * while not on that topology or while a fault is latched) -- same
+ * "stale, not wrong" convention as the other AppGetLastCommanded*() getters
+ * above. */
+int32_t AppGetLastElectricalAngleDeg(void);
+
+/* Raw Hall sector (0..5, or -1 for HallDecode's own invalid-state marker --
+ * see Hall.h) for telemetry -- output.topology=two_phase_analog only, read
+ * fresh every tick (even across a latched fault -- this is a bring-up
+ * diagnostic, not control-loop state; see docs/two-phase-drive.md). Stays
+ * at 0 for the lifetime of any build/run that never actually drives the
+ * two-phase branch, same "stale, not wrong" convention as
+ * AppGetLastElectricalAngleDeg() above. Lets a capture show directly
+ * whether Hall wiring is backward or a sector transition is out of
+ * sequence, instead of only the already-computed (possibly nonsensical)
+ * electrical angle downstream of it. */
+int32_t AppGetLastHallSector(void);
 
 /* 1kHz control-tick CPU headroom -- software-side version of what
  * TICK_ACTIVE_PIN (gpio.h) lets a logic analyzer measure externally. */

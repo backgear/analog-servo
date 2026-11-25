@@ -77,6 +77,14 @@ void GpioInit(void) {
   g.Pin  = HW_ENABLE_PIN;
   HAL_GPIO_Init(HW_ENABLE_GPIO_PORT, &g);
 
+  /* Hall sensor inputs, output.topology=two_phase_analog only -- see
+   * gpio.h's HALL_A_PIN comment. All three share one port/pull config
+   * since they're all on GPIOC on this board. */
+  g.Mode = GPIO_MODE_INPUT;
+  g.Pull = GPIO_PULLUP;
+  g.Pin  = HALL_A_PIN | HALL_B_PIN | HALL_C_PIN;
+  HAL_GPIO_Init(HALL_A_GPIO_PORT, &g);
+
   /* USART2: TX and RX both AF push-pull. */
   g.Mode      = GPIO_MODE_AF_PP;
   g.Pull      = GPIO_NOPULL;
@@ -103,6 +111,17 @@ void GpioInit(void) {
   g.Pin   = ZERO_CLAMP_PIN;
   HAL_GPIO_Init(ZERO_CLAMP_GPIO_PORT, &g);
   ZeroClampWrite(0);
+
+  /* Phase sign bits, output.topology=two_phase_analog only: plain
+   * push-pull outputs, low (positive) at boot -- see gpio.h's
+   * PHASE_A_SIGN_PIN comment. */
+  g.Mode  = GPIO_MODE_OUTPUT_PP;
+  g.Pull  = GPIO_NOPULL;
+  g.Speed = GPIO_SPEED_FREQ_LOW;
+  g.Pin   = PHASE_A_SIGN_PIN | PHASE_B_SIGN_PIN;
+  HAL_GPIO_Init(PHASE_A_SIGN_GPIO_PORT, &g);
+  PhaseSignWrite(0, 0);
+  PhaseSignWrite(1, 0);
 
   /* Tick-active + signal-busy debug pins: plain push-pull outputs. */
   g.Mode  = GPIO_MODE_OUTPUT_PP;
@@ -148,4 +167,12 @@ void ZeroClampWrite(int asserted) {
 
 void BrakeReleaseWrite(int released) {
   HAL_GPIO_WritePin(BRAKE_RELEASE_GPIO_PORT, BRAKE_RELEASE_PIN, released ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
+/* channel 0 = phase A, 1 = phase B. Active-high = negative -- see gpio.h's
+ * PHASE_A_SIGN_PIN comment. */
+void PhaseSignWrite(int channel, int negative) {
+  GPIO_TypeDef *port = (channel == 0) ? PHASE_A_SIGN_GPIO_PORT : PHASE_B_SIGN_GPIO_PORT;
+  uint16_t pin = (channel == 0) ? PHASE_A_SIGN_PIN : PHASE_B_SIGN_PIN;
+  HAL_GPIO_WritePin(port, pin, negative ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }

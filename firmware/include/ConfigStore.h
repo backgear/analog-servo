@@ -45,6 +45,12 @@
  * count/tick of encoder quantization noise produces visible idle chatter. */
 #define CONFIG_DEFAULT_VELOCITY_ERROR_DEADBAND_COUNTS 0
 
+/* output.topology=two_phase_analog placeholders (`two-phase-output` draft-PR
+ * branch) -- pure guesses, NOT derived from any real motor, until
+ * `commutation detect_poles` actually runs. See docs/two-phase-drive.md. */
+#define CONFIG_DEFAULT_COMMUTATION_POLE_PAIRS 4
+#define CONFIG_DEFAULT_COMMUTATION_COUNTS_PER_ELEC_REV 1000
+
 typedef struct {
   uint8_t servoMode;                 /* 0 = Mode A (step/dir), 1 = Mode B (velocity
                                          command), 2 = Mode C (analog velocity) */
@@ -79,6 +85,14 @@ typedef struct {
   int32_t rampAccelCountsPerTickPerSec; /* Mode B jog ramp + PositionMove.c's deceleration
                                             planning -- see CONFIG_DEFAULT_RAMP_ACCEL above */
   int32_t velocityErrorDeadbandCounts;  /* see Control.h's ControlGains field of the same name */
+  uint8_t outputTopology;               /* see Output.h's OutputTopology -- added on the
+                                            `two-phase-output` draft-PR branch */
+  uint8_t commutationLearned;
+  int32_t commutationPolePairs;          /* placeholder default until `commutation
+                                             detect_poles` has actually run, see
+                                             ConfigStore.c */
+  int32_t commutationCountsPerElecRev;   /* ditto */
+  int32_t commutationOffsetDeg;          /* 0 until a successful `commutation learn` */
 } ConfigData;
 
 /* Erase + program + readback-verify. Returns 0 on success, -1 on failure. */

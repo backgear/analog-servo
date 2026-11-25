@@ -22,10 +22,15 @@ import struct
 import sigrokdecode as srd
 
 ANN_SYNC, ANN_SEQ, ANN_POSITION, ANN_VELOCITY, ANN_TORQUE, \
-    ANN_CMD_POSITION, ANN_CMD_VELOCITY, \
-    ANN_STATUS, ANN_FAULT_REASON, ANN_CRC, ANN_FRAME, ANN_WARNING, ANN_INTEGRAL = range(13)
+    ANN_CMD_POSITION, ANN_CMD_VELOCITY, ANN_INTEGRAL, \
+    ANN_ELECTRICAL_ANGLE, ANN_HALL_SECTOR, ANN_COMMUTATION_OFFSET, \
+    ANN_STATUS, ANN_FAULT_REASON, ANN_CRC, ANN_FRAME, ANN_WARNING = range(16)
 
-FRAME_LEN = 32   # includes diagnostic Q16 velocity integral
+FRAME_LEN = 44   # was 40 before commutationOffsetDeg (int32) was added, 36
+                 # before that (hallSector), 32 before that
+                 # (electricalAngleDeg), 28 before that (velocityIntegral,
+                 # an INDEPENDENT growth on `main`), 20 before that
+                 # (commandedPosition/commandedVelocity, 2x int32)
 SYNC_BYTE = 0xAA
 
 MODE_NAMES = ('stepdir', 'host', 'analog')  # status bits0-1, 2 bits
@@ -51,7 +56,7 @@ class Decoder(srd.Decoder):
     id = 'analog_servo_monitor'
     name = 'analog-servo Monitor'
     longname = 'analog-servo Monitor.c binary telemetry'
-    desc = "Decodes analog-servo's 32-byte Monitor.c telemetry frame."
+    desc = "Decodes analog-servo's 44-byte Monitor.c telemetry frame."
     license = 'gplv2+'
     inputs = ['uart']
     outputs = []
@@ -64,17 +69,23 @@ class Decoder(srd.Decoder):
         ('torque', 'Torque command'),
         ('cmd-position', 'Commanded position (counts, desired)'),
         ('cmd-velocity', 'Commanded velocity (counts/tick, desired)'),
+        ('velocity-integral', 'Velocity integral (Q16 torque units)'),
+        ('electrical-angle', 'Electrical angle (degrees, two-phase output only)'),
+        ('hall-sector', 'RAW Hall sector (0-5, or -1 invalid; two-phase output only)'),
+        ('commutation-offset', 'Learned commutation alignment offset (degrees)'),
         ('status', 'Status bits'),
         ('fault-reason', 'Fault reason'),
         ('crc', 'CRC-8'),
         ('frame', 'Frame'),
         ('warning', 'Warning'),
-        ('velocity-integral', 'Velocity integral (Q16 torque units)'),
     )
     annotation_rows = (
         ('fields', 'Fields', (ANN_SYNC, ANN_SEQ, ANN_POSITION, ANN_VELOCITY,
                                ANN_TORQUE, ANN_CMD_POSITION, ANN_CMD_VELOCITY,
-                               ANN_INTEGRAL, ANN_STATUS, ANN_FAULT_REASON, ANN_CRC)),
+                               ANN_INTEGRAL,
+                               ANN_ELECTRICAL_ANGLE, ANN_HALL_SECTOR,
+                               ANN_COMMUTATION_OFFSET,
+                               ANN_STATUS, ANN_FAULT_REASON, ANN_CRC)),
         ('frames', 'Frames', (ANN_FRAME,)),
         ('warnings', 'Warnings', (ANN_WARNING,)),
     )
@@ -101,8 +112,9 @@ class Decoder(srd.Decoder):
         always (1/256 chance of a coincidental match), unlike the old
         mode/fault_reason-range-only check this replaced.'''
         data = bytes(b[2] for b in window)
-        (sync, seq, position, velocity, torque, cmd_position, cmd_velocity,
-         integral, status, fault_reason, frame_crc) = struct.unpack_from('<BIiiiiiiBBB', data)
+        (sync, seq, position, velocity, torque, cmd_position, cmd_velocity, integral,
+         electrical_angle_deg, hall_sector, commutation_offset_deg, status, fault_reason,
+         frame_crc) = struct.unpack_from('<BIiiiiiiiiiBBB', data)
 
         if crc8(data[:-1]) != frame_crc:
             return False
@@ -118,9 +130,15 @@ class Decoder(srd.Decoder):
         self.putf(window[13][0], window[16][1], ANN_TORQUE, 'torque=%d' % torque)
         self.putf(window[17][0], window[20][1], ANN_CMD_POSITION, 'cmd_position=%d' % cmd_position)
         self.putf(window[21][0], window[24][1], ANN_CMD_VELOCITY, 'cmd_velocity=%d' % cmd_velocity)
-
         self.putf(window[25][0], window[28][1], ANN_INTEGRAL,
                   'velocity_integral_q16=%d' % integral)
+        self.putf(window[29][0], window[32][1], ANN_ELECTRICAL_ANGLE,
+                  'electrical_angle_deg=%d' % electrical_angle_deg)
+        self.putf(window[33][0], window[36][1], ANN_HALL_SECTOR,
+                  'hall_sector=%d' % hall_sector)
+        self.putf(window[37][0], window[40][1], ANN_COMMUTATION_OFFSET,
+                  'commutation_offset_deg=%d' % commutation_offset_deg)
+
         mode = MODE_NAMES[mode_bits]
         enabled = (status >> 2) & 1
         fault_latched = (status >> 3) & 1
@@ -128,18 +146,20 @@ class Decoder(srd.Decoder):
         hw_enable = (status >> 5) & 1
         synthetic = (status >> 6) & 1
         cycle_start = (status >> 7) & 1
-        self.putf(window[29][0], window[29][1], ANN_STATUS,
+        self.putf(window[41][0], window[41][1], ANN_STATUS,
                   'mode=%s enabled=%d fault=%d reserved4=%d hw_enable=%d synthetic=%d cycle_start=%d' %
                   (mode, enabled, fault_latched, reserved4, hw_enable, synthetic, cycle_start))
 
         reason = FAULT_REASON_NAMES[fault_reason]
-        self.putf(window[30][0], window[30][1], ANN_FAULT_REASON, 'fault_reason=%s' % reason)
+        self.putf(window[42][0], window[42][1], ANN_FAULT_REASON, 'fault_reason=%s' % reason)
 
-        self.putf(window[31][0], window[31][1], ANN_CRC, 'crc8=0x%02X OK' % frame_crc)
+        self.putf(window[43][0], window[43][1], ANN_CRC, 'crc8=0x%02X OK' % frame_crc)
 
         self.putf(window[0][0], window[-1][1], ANN_FRAME,
-                  'seq=%u pos=%d(cmd %d) vel=%d(cmd %d) torque=%d mode=%s%s%s%s' %
-                  (seq, position, cmd_position, velocity, cmd_velocity, torque, mode,
+                  'seq=%u pos=%d(cmd %d) vel=%d(cmd %d) torque=%d integral=%d angle=%d hall=%d '
+                  'commoffset=%d mode=%s%s%s%s' %
+                  (seq, position, cmd_position, velocity, cmd_velocity, torque, integral,
+                   electrical_angle_deg, hall_sector, commutation_offset_deg, mode,
                    ' FAULT:%s' % reason if fault_latched else '',
                    ' SYNTHETIC' if synthetic else '',
                    ' CYCLE_START' if cycle_start else ''))

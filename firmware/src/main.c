@@ -30,6 +30,10 @@
 #include "Protocol.h"
 #include "usart.h"
 #include "usbd_cdc_composite_if.h"
+#ifdef ANALOG_SERVO_TWO_PHASE_DRIVE
+#include "Hall.h"
+#include "Commutation.h"
+#endif
 
 void Error_Handler(void) { __disable_irq(); while (1) { } }
 
@@ -125,6 +129,40 @@ static int      sLearningFailed = 0;         /* last attempt rejected for insuff
                                                  sConfig.polarityLearned/polaritySign */
 static int32_t  sLearningLastMovedCounts = 0;
 
+static OutputTopology sOutputTopology = OUTPUT_TOPOLOGY_ANALOG_TORQUE;
+
+#ifdef ANALOG_SERVO_TWO_PHASE_DRIVE
+#define COMMUTATION_LEARN_TEST_TORQUE    (TORQUE_FULL_SCALE / 3)   /* same scale as
+                                                                        POLARITY_LEARN_TEST_TORQUE */
+#define COMMUTATION_LEARN_DURATION_TICKS 5000   /* ~5s @ 1kHz -- tune on the bench; needs to
+                                                     be long enough to observe
+                                                     COMMUTATION_LEARN_MIN_TRANSITIONS Hall
+                                                     transitions at whatever speed this test
+                                                     torque actually produces on the real
+                                                     plant, unknown until one is on hand */
+static int      sCommLearningActive = 0;
+static int32_t  sCommLearningTicksRemaining = 0;
+static int      sCommLearningFailed = 0;     /* same "don't silently overwrite a good prior
+                                                  calibration" convention as sLearningFailed */
+static int      sLastHallSectorSeen = -2;    /* -2 == "no reading yet this attempt" --
+                                                  distinct from -1 (HallDecode's own invalid-
+                                                  state marker) so the first valid reading of
+                                                  an attempt is never mistaken for a transition.
+                                                  Shared with the pole-detect branch below --
+                                                  the two never run concurrently. */
+
+/* Pole-count/counts-per-elec-rev detection -- see Commutation.h/
+ * docs/two-phase-drive.md. Same duration budget as commutation-learn's --
+ * both just need enough Hall-sector transitions to average out noise, not
+ * a full mechanical revolution -- untuned, same "needs real hardware"
+ * caveat as everything else on this branch. */
+#define POLE_LEARN_DURATION_TICKS 5000   /* ~5s @ 1kHz -- tune on the bench */
+static int      sPoleLearnActive = 0;
+static int32_t  sPoleLearnTicksRemaining = 0;
+static int      sPoleLearnFailed = 0;
+static int32_t  sPoleLearnEncoderCpr = 0;      /* caller's known CPR */
+#endif /* ANALOG_SERVO_TWO_PHASE_DRIVE */
+
 static int32_t sSignalBasePosition = 0;   /* captured at AppSignalStart() for SIGNAL_TARGET_POSITION */
 
 static int32_t sLastVelocityActual = 0;
@@ -143,6 +181,31 @@ static AppControlSample sControlSample;
 static uint32_t sStationaryTicks = 0;
 static int32_t sLastCommandedPosition = 0;
 static int32_t sLastCommandedVelocity = 0;
+
+/* Last electrical angle (degrees, 0..359) the two-phase-output branch's
+ * commutation stage computed -- see Commutation.c. Only ever written inside
+ * the ANALOG_SERVO_TWO_PHASE_DRIVE branch below; stays at its initialized 0
+ * for the lifetime of a build/run that never takes that branch (the
+ * default env:analog_servo build, or env:analog_servo_two_phase while
+ * output.topology isn't two_phase_analog or a fault is latched) -- same
+ * "stale, not wrong" convention as sLastCommandedPosition/Velocity above.
+ * Monitor.c's electricalAngleDeg frame field is only meaningful once this
+ * has actually been driven by that branch at least once. */
+static int32_t sLastElectricalAngleDeg = 0;
+
+/* Raw Hall sector (0..5, or -1 for HallDecode's own invalid-state marker --
+ * see Hall.h) for telemetry -- separate from sLastHallSectorSeen above,
+ * which is learn-attempt-scoped transition-tracking state (reset to -2 at
+ * the start of each commutation-learn/detect-poles attempt) and not
+ * suitable for a continuous telemetry readout. Written every tick the top
+ * of AppControlTick()'s Hall read runs (output.topology=two_phase_analog
+ * only), BEFORE any fault-latch branch -- deliberately visible even while
+ * a fault is latched, since a bad Hall wiring/wrong-sequence bring-up
+ * problem is exactly the kind of fault this is meant to help diagnose.
+ * Stays at its initialized 0 for the lifetime of a build/run that never
+ * takes that branch -- same "stale, not wrong" convention as
+ * sLastElectricalAngleDeg above; see Monitor.c's hallSector frame field. */
+static int32_t sLastHallSectorForTelemetry = 0;
 
 static int32_t sLastAnalogRawAdc = 0;
 static int     sLastAnalogReversed = 0;
@@ -202,6 +265,23 @@ void AppSetEnabled(int enabled) {
   }
 }
 
+OutputTopology AppGetOutputTopology(void) { return sOutputTopology; }
+int AppSetOutputTopology(OutputTopology topology) {
+#ifndef ANALOG_SERVO_TWO_PHASE_DRIVE
+  /* Not built into this env -- Hall.c/Commutation.c aren't compiled in at
+   * all, see platformio.ini's analog_servo vs. analog_servo_two_phase envs. */
+  if (topology == OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG) return -1;
+#endif
+  sOutputTopology = topology;
+  sConfig.outputTopology = (uint8_t)topology;
+  OutputSetTopology(topology);
+  return 0;
+}
+void AppSetCommutationConfig(int32_t polePairs, int32_t countsPerElecRev) {
+  sConfig.commutationPolePairs = polePairs;
+  sConfig.commutationCountsPerElecRev = countsPerElecRev;
+}
+
 int32_t AppGetCommandedVelocity(void) { return sCommandedVelocity; }
 void    AppSetCommandedVelocity(int32_t countsPerTick) { sCommandedVelocity = countsPerTick; }
 
@@ -214,9 +294,17 @@ int AppResetPosition(void) {
   uint32_t primask = __get_PRIMASK();
   __disable_irq();
   if (sEnabled || sStationaryTicks < 50U || sLearningActive ||
-      AppAutotuneBusy() || SignalIsActive()) {
+      AppAutotuneBusy() || SignalIsActive() ||
+      AppCommutationLearnBusy() || AppCommutationDetectPolesBusy()) {
     __set_PRIMASK(primask);
     return -2;
+  }
+  /* Two-phase commutation uses encoder coordinates for electrical phase.
+   * Rebasing those needs a separate phase-preserving origin abstraction --
+   * not built, see docs/two-phase-drive.md. */
+  if (sOutputTopology == OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG) {
+    __set_PRIMASK(primask);
+    return -3;
   }
   EncoderResetPosition();
   (void)StepDirGetDeltaCounts(); /* discard pending step input at new origin */
@@ -230,6 +318,8 @@ int AppResetPosition(void) {
   AnalogVelocityReset();
   sLastCommandedPosition = sLastCommandedVelocity = 0;
   sLastVelocityActual = sLastTorqueCommand = 0;
+  sLastElectricalAngleDeg = 0;
+  sLastHallSectorForTelemetry = 0;
   sControlSample.position = sControlSample.velocity = sControlSample.torque = 0;
   sControlSample.followingError = 0;
   sControlSample.positionReference = sControlSample.velocityReference = 0;
@@ -320,6 +410,8 @@ int AppConfigLoad(void) {
   if (ConfigStoreLoad(&loaded) != 0) return -1;
   sConfig = loaded;
   sMode = (ServoMode)sConfig.servoMode;
+  sOutputTopology = (OutputTopology)sConfig.outputTopology;
+  OutputSetTopology(sOutputTopology);
   ApplyConfigToModules();
   return 0;
 }
@@ -327,6 +419,8 @@ int AppConfigLoad(void) {
 void AppConfigDefaults(void) {
   ConfigDataSetDefaults(&sConfig);
   sMode = (ServoMode)sConfig.servoMode;
+  sOutputTopology = (OutputTopology)sConfig.outputTopology;
+  OutputSetTopology(sOutputTopology);
   ApplyConfigToModules();
 }
 
@@ -350,12 +444,68 @@ int     AppPolarityLearnBusy(void) { return sLearningActive; }
 int     AppGetPolarityLearnFailed(void) { return sLearningFailed; }
 int32_t AppGetPolarityLearnMovedCounts(void) { return sLearningLastMovedCounts; }
 
+#ifdef ANALOG_SERVO_TWO_PHASE_DRIVE
+void AppCommutationLearn(void) {
+  if (FaultIsLatched()) return;   /* can't learn while faulted */
+  if (sOutputTopology != OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG) return;   /* needs the Hall
+    pins/angle math this topology wires up -- see docs/two-phase-drive.md */
+  FaultClear();   /* see AppPolarityLearn()'s comment -- fresh test, fresh window */
+  CommutationLearnReset();
+  sCommLearningActive = 1;
+  sCommLearningTicksRemaining = COMMUTATION_LEARN_DURATION_TICKS;
+  sCommLearningFailed = 0;   /* clear any stale failure from a previous attempt */
+  sLastHallSectorSeen = -2;
+}
+int AppCommutationLearnBusy(void) { return sCommLearningActive; }
+int AppGetCommutationLearnFailed(void) { return sCommLearningFailed; }
+
+void AppCommutationDetectPoles(int32_t encoderCpr) {
+  if (encoderCpr <= 0) return;   /* caller's known-CPR precondition -- see
+    Commutation.h: the Z-index fallback for unknown CPR was designed but
+    deliberately not implemented, see docs/two-phase-drive.md */
+  if (FaultIsLatched()) return;   /* can't learn while faulted */
+  if (sOutputTopology != OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG) return;   /* same requirement as
+    AppCommutationLearn() -- needs the Hall pins/angle math this topology wires up */
+  FaultClear();   /* see AppPolarityLearn()'s comment -- fresh test, fresh window */
+  CommutationPoleLearnBySpacingReset();
+  sPoleLearnActive = 1;
+  sPoleLearnEncoderCpr = encoderCpr;
+  sPoleLearnTicksRemaining = POLE_LEARN_DURATION_TICKS;
+  sPoleLearnFailed = 0;   /* clear any stale failure from a previous attempt */
+  sLastHallSectorSeen = -2;
+}
+int AppCommutationDetectPolesBusy(void) { return sPoleLearnActive; }
+int AppGetCommutationDetectPolesFailed(void) { return sPoleLearnFailed; }
+#else
+/* Not built into this env -- see AppSetOutputTopology()'s identical
+ * comment. Degenerate no-op/always-idle/always-failed implementations so
+ * Protocol.c's `commutation.*` commands don't need their own #ifdef. */
+void AppCommutationLearn(void) { }
+int AppCommutationLearnBusy(void) { return 0; }
+int AppGetCommutationLearnFailed(void) { return 0; }
+void AppCommutationDetectPoles(int32_t encoderCpr) { (void)encoderCpr; }
+int AppCommutationDetectPolesBusy(void) { return 0; }
+int AppGetCommutationDetectPolesFailed(void) { return 0; }
+#endif /* ANALOG_SERVO_TWO_PHASE_DRIVE */
+
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
 static int32_t ClampToTorqueRange(int32_t amp) {
   if (amp > sConfig.torqueClampMax) amp = sConfig.torqueClampMax;
   if (amp < sConfig.torqueClampMin) amp = sConfig.torqueClampMin;
   return amp;
 }
+#endif
 
+/* Both autotune mechanisms (the relay method below and RLS further down)
+ * are excluded from F103 to recover flash -- see platformio.ini's
+ * analog_servo_f103 build_src_filter comment. Same shape as
+ * ANALOG_SERVO_TWO_PHASE_DRIVE's split: the REAL bodies (this branch) call
+ * into Autotune.c/RLS.c/GainGlide.c, only ever reached when
+ * ANALOG_SERVO_HAS_AUTOTUNE is defined (so those three .c files being
+ * absent from an F103 build never leaves an unresolved symbol); the #else
+ * branch below gives Protocol.c's `autotune.*`/`rls.*` commands degenerate
+ * always-idle/always-none stand-ins so it doesn't need its own #ifdef. */
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
 void AppAutotuneStartRelay(int32_t amplitude, uint32_t maxTicks) {
   if (FaultIsLatched()) return;   /* can't run a test while faulted */
   FaultClear();   /* see AppPolarityLearn()'s comment -- fresh test, fresh window */
@@ -429,6 +579,40 @@ void     AppRlsApply(void) {
   uint32_t totalTicks = (uint32_t)(((uint64_t)sRlsGlideMs * CONTROL_TICK_HZ) / 1000U);
   GainGlideStart(&sGainGlide, current, &target, totalTicks);
 }
+#else /* !ANALOG_SERVO_HAS_AUTOTUNE -- degenerate stand-ins, same convention as
+         ANALOG_SERVO_TWO_PHASE_DRIVE's #else branch further down */
+void    AppAutotuneStartRelay(int32_t amplitude, uint32_t maxTicks) { (void)amplitude; (void)maxTicks; }
+void    AppAutotuneStop(void) {}
+int     AppAutotuneBusy(void) { return 0; }
+AutotuneMethod AppAutotuneGetMethod(void) { return AUTOTUNE_METHOD_RELAY; }
+AutotuneResult AppAutotuneGetResult(void) { return AUTOTUNE_RESULT_NONE; }
+int32_t  AppAutotuneGetKpResultQ8(void) { return 0; }
+int32_t  AppAutotuneGetKiResultQ8(void) { return 0; }
+int32_t  AppAutotuneGetPosPResultQ8(void) { return 0; }
+uint32_t AppAutotuneGetMeasuredPeriodTicks(void) { return 0; }
+int32_t  AppAutotuneGetMeasuredGainQ8(void) { return 0; }
+void     AppAutotuneApply(void) {}
+uint32_t AppAutotuneGetRelayProgressSeq(void) { return 0; }
+uint32_t AppAutotuneGetRelayProgressTicksElapsed(void) { return 0; }
+uint32_t AppAutotuneGetRelayProgressMaxTicks(void) { return 0; }
+uint32_t AppAutotuneGetRelayProgressSwitchCount(void) { return 0; }
+uint32_t AppAutotuneGetRelayProgressSwitchesNeeded(void) { return 0; }
+int32_t  AppAutotuneGetRelayProgressPeakVelocity(void) { return 0; }
+void    AppRlsStart(int32_t lambdaQ8, uint32_t glideMs) { (void)lambdaQ8; (void)glideMs; }
+void    AppRlsStop(void) {}
+int     AppRlsBusy(void) { return 0; }
+AutotuneResult AppRlsGetResult(void) { return AUTOTUNE_RESULT_NONE; }
+int32_t  AppRlsGetKpResultQ8(void) { return 0; }
+int32_t  AppRlsGetKiResultQ8(void) { return 0; }
+int32_t  AppRlsGetThetaAQ8(void) { return 0; }
+int32_t  AppRlsGetThetaBQ8(void) { return 0; }
+int64_t  AppRlsGetPTrace(void) { return 0; }
+uint32_t AppRlsGetTicksObserved(void) { return 0; }
+uint32_t AppRlsGetProgressSeq(void) { return 0; }
+void     AppRlsSetAggressiveness(int32_t extraSquarings) { (void)extraSquarings; }
+int32_t  AppRlsGetAggressiveness(void) { return 0; }
+void     AppRlsApply(void) {}
+#endif /* ANALOG_SERVO_HAS_AUTOTUNE */
 
 void AppSignalStart(SignalType type, SignalTarget target, int32_t amplitude,
                      uint32_t halfPeriodTicks, uint32_t durationTicks) {
@@ -471,6 +655,7 @@ static int32_t ComputeCommandedVelocity(void) {
 void AppControlTick(void) {
   HAL_GPIO_WritePin(TICK_ACTIVE_GPIO_PORT, TICK_ACTIVE_PIN, GPIO_PIN_SET);
 
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
   /* AppRlsApply()'s glide, if one is in flight -- applies regardless of
    * which mode branch runs below, same as FaultTick()/MonitorTick() at the
    * bottom of this function. Calls ControlSetGains() directly rather than
@@ -481,6 +666,7 @@ void AppControlTick(void) {
     ControlGains glided;
     if (GainGlideTick(&sGainGlide, &glided)) ControlSetGains(&glided);
   }
+#endif
 
   uint32_t nowCycles = DWT->CYCCNT;
   uint32_t dtCycles = nowCycles - sLastCycles;
@@ -496,6 +682,24 @@ void AppControlTick(void) {
    * normal-cascade branch below actually acts on it. */
   int hwEnableAsserted = (HAL_GPIO_ReadPin(HW_ENABLE_GPIO_PORT, HW_ENABLE_PIN) == GPIO_PIN_RESET);
   sLastHwEnableAsserted = hwEnableAsserted;
+
+#ifdef ANALOG_SERVO_TWO_PHASE_DRIVE
+  /* Hall sector, output.topology=two_phase_analog only -- read once here,
+   * used both by the commutation-learn branch below (transition detection)
+   * and the final output-dispatch section at the bottom (angle source).
+   * -1 (HallDecode's invalid-state marker) when topology isn't
+   * two_phase_analog at all -- harmless, nothing reads it in that case. */
+  int hallSector = -1;
+  if (sOutputTopology == OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG) {
+    int ha = (HAL_GPIO_ReadPin(HALL_A_GPIO_PORT, HALL_A_PIN) == GPIO_PIN_RESET);
+    int hb = (HAL_GPIO_ReadPin(HALL_B_GPIO_PORT, HALL_B_PIN) == GPIO_PIN_RESET);
+    int hc = (HAL_GPIO_ReadPin(HALL_C_GPIO_PORT, HALL_C_PIN) == GPIO_PIN_RESET);
+    hallSector = HallDecode(ha, hb, hc);
+    sLastHallSectorForTelemetry = hallSector;   /* unconditional, even across a latched
+        fault -- see sLastHallSectorForTelemetry's own comment above: this is a
+        bring-up diagnostic, not control-loop state. */
+  }
+#endif
 
   int32_t torqueCommand = 0;
 
@@ -522,11 +726,87 @@ void AppControlTick(void) {
       sLearningActive = 0;
       torqueCommand = 0;
     }
+#ifdef ANALOG_SERVO_TWO_PHASE_DRIVE
+  } else if (sCommLearningActive) {
+    /* Open-loop two-phase commutation driven directly off the live Hall
+     * sector, deliberately NOT offset-corrected -- see
+     * docs/two-phase-drive.md's "One-time alignment commissioning". Each
+     * observed sector transition feeds CommutationLearnAccumulate() with
+     * the raw (uncorrected) encoder angle at that instant; the final
+     * output-dispatch section below does the actual Ia/Ib conversion using
+     * hallSector (read above) the same way the normal two_phase_analog
+     * path does, just with torqueCommand pinned to a small constant
+     * instead of whatever the real cascade would produce. */
+    ControlSetTorqueScale(CONTROL_TORQUE_SCALE_FULL_Q8);
+    torqueCommand = COMMUTATION_LEARN_TEST_TORQUE;
+    if (hallSector >= 0) {
+      if (sLastHallSectorSeen != -2 && hallSector != sLastHallSectorSeen) {
+        int32_t rawEncoderAngleDeg = CommutationElectricalAngleFromEncoderDeg(
+            EncoderGetPositionCounts(), sConfig.commutationCountsPerElecRev, 0);
+        CommutationLearnAccumulate(rawEncoderAngleDeg, hallSector);
+      }
+      sLastHallSectorSeen = hallSector;
+    }
+    sCommLearningTicksRemaining--;
+    if (sCommLearningTicksRemaining <= 0) {
+      int32_t offsetDeg;
+      if (CommutationLearnEvaluate(&offsetDeg)) {
+        sConfig.commutationLearned = 1;
+        sConfig.commutationOffsetDeg = offsetDeg;
+        sCommLearningFailed = 0;
+      } else {
+        /* Too few Hall transitions observed -- don't persist a meaningless
+         * offset; leave any previously-learned value untouched, same
+         * convention as polarity-learn's rejection path above. */
+        sCommLearningFailed = 1;
+      }
+      sCommLearningActive = 0;
+      torqueCommand = 0;
+    }
+  } else if (sPoleLearnActive) {
+    /* Same open-loop two-phase test-pulse drive as commutation-learn above
+     * (torqueCommand pinned to a small constant, Ia/Ib synthesized from the
+     * live Hall sector in the output-dispatch section below), just feeding
+     * CommutationPoleLearnBySpacing* instead -- see Commutation.h's
+     * "Pole-count detection" section. */
+    ControlSetTorqueScale(CONTROL_TORQUE_SCALE_FULL_Q8);
+    torqueCommand = COMMUTATION_LEARN_TEST_TORQUE;
+    if (hallSector >= 0) {
+      if (sLastHallSectorSeen != -2 && hallSector != sLastHallSectorSeen) {
+        CommutationPoleLearnBySpacingAccumulate(EncoderGetPositionCounts(), hallSector);
+      }
+      sLastHallSectorSeen = hallSector;
+    }
+    sPoleLearnTicksRemaining--;
+    if (sPoleLearnTicksRemaining <= 0) {
+      int32_t countsPerElecRev, polePairs;
+      int ok = CommutationPoleLearnBySpacingEvaluate(sPoleLearnEncoderCpr, &countsPerElecRev, &polePairs);
+      if (ok) {
+        sConfig.commutationPolePairs = polePairs;
+        sConfig.commutationCountsPerElecRev = countsPerElecRev;
+        sPoleLearnFailed = 0;
+      } else {
+        /* Too little data -- don't persist a meaningless value; leave any
+         * previously-set config untouched, same convention as the other
+         * learn routines' rejection paths. */
+        sPoleLearnFailed = 1;
+      }
+      sPoleLearnActive = 0;
+      torqueCommand = 0;
+    }
+#endif /* ANALOG_SERVO_TWO_PHASE_DRIVE */
   } else if (AppAutotuneBusy()) {
     /* Bypasses the cascade entirely -- the relay drives torque directly off
-     * velocityActual's sign, it isn't pursuing a position target. */
+     * velocityActual's sign, it isn't pursuing a position target. Dead on
+     * F103 (AppAutotuneBusy() permanently returns 0 there -- see its own
+     * #else stand-in above), but AutotuneTick() itself still needs an
+     * #ifdef, not just a dead branch: Autotune.c isn't linked on F103 at
+     * all (see platformio.ini), so the real call has to be compiled out,
+     * not merely unreached. */
     ControlSetTorqueScale(CONTROL_TORQUE_SCALE_FULL_Q8);
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
     torqueCommand = AutotuneTick(velocityActual);
+#endif
     if (sConfig.polarityLearned) torqueCommand *= sConfig.polaritySign;
   } else if (SignalIsActive()) {
     HAL_GPIO_WritePin(SIGNAL_BUSY_GPIO_PORT, SIGNAL_BUSY_PIN, GPIO_PIN_SET);   /* see
@@ -597,16 +877,20 @@ void AppControlTick(void) {
     torqueCommand = ControlTickWithReferenceLimitQ8(positionTarget, positionActual, velocityActual,
         referenceVelocityQ8, positionTrajectoryActive ? CommandVelocityLimit() : sConfig.velocityClamp, dtCycles);
     if (sConfig.polarityLearned) torqueCommand *= sConfig.polaritySign;
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
     /* Near-passive observer -- sees the same already-polarity-corrected
      * torque command and measured velocity the cascade above just used,
      * plus a small self-limiting dither while still converging (see RLS.h's
      * "Torque dither" section) -- RlsGetDitherTorque() returns exactly 0
      * once converged or not running, so this is always safe to add in.
      * Re-clamped afterward since dither can push the command slightly past
-     * the configured torque limits. */
+     * the configured torque limits. RLS.c isn't linked at all without
+     * ANALOG_SERVO_HAS_AUTOTUNE (see platformio.ini) -- no observer, no
+     * dither, same as F103's degenerate AppRls*() stand-ins above. */
     torqueCommand += RlsGetDitherTorque();
     torqueCommand = ClampToTorqueRange(torqueCommand);
     RlsTick(torqueCommand, velocityActual);
+#endif
   } else {
     /* Disabled (and not learning): keep the position target accumulator
      * glued to actual position, so re-enabling doesn't yank the axis back
@@ -618,6 +902,9 @@ void AppControlTick(void) {
   /* Following error is only meaningful when Control.c's cascade actually ran
    * this tick: the normal enabled path, or a SIGNAL_TARGET_POSITION signal. */
   int useRealPositionError = (sEnabled && !sLearningActive &&
+#ifdef ANALOG_SERVO_TWO_PHASE_DRIVE
+                               !sCommLearningActive && !sPoleLearnActive &&
+#endif
                                !AppAutotuneBusy() && !SignalIsActive()) ||
                               (SignalIsActive() && SignalGetTarget() == SIGNAL_TARGET_POSITION);
   int32_t positionError = useRealPositionError ? ControlGetLastPositionError() : 0;
@@ -625,7 +912,11 @@ void AppControlTick(void) {
    * the physical DAC sign. */
   int32_t axisTorque = torqueCommand;
   if (sConfig.polarityLearned) axisTorque *= sConfig.polaritySign;
-  FaultSetPolarityCheckSuppressed(sLearningActive);
+  FaultSetPolarityCheckSuppressed(sLearningActive
+#ifdef ANALOG_SERVO_TWO_PHASE_DRIVE
+                                  || sCommLearningActive || sPoleLearnActive
+#endif
+  );
   FaultTick(axisTorque, velocityActual, positionError, totalEdges);
 
   sFreezeTickCounter++;
@@ -659,11 +950,41 @@ void AppControlTick(void) {
 
   if (FaultIsLatched()) {
     SignalStop();     /* a fault mid-test aborts it, rather than leaving it running silently */
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
     AutotuneStop();   /* ditto for an in-progress autotune */
+#endif
     OutputForceSafe();
     IndicatorSetState(INDICATOR_FAULT);
     sLastTorqueCommand = 0;
-  } else {
+  }
+#ifdef ANALOG_SERVO_TWO_PHASE_DRIVE
+  else if (sOutputTopology == OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG) {
+    /* Everything above this point computed torqueCommand exactly the same
+     * way regardless of topology -- see docs/two-phase-drive.md. Only the
+     * final conversion to an electrical angle + Ia/Ib differs. Pre-Z-index
+     * (or no valid Hall reading): coarse Hall-sector angle, NOT
+     * offset-corrected during sCommLearningActive/sPoleLearnActive (that's
+     * what's being measured). Post-Z: continuous encoder-derived angle,
+     * offset-corrected. */
+    int32_t angleDeg;
+    if (sCommLearningActive || sPoleLearnActive || !EncoderZWasSeenSinceEnable()) {
+      int sectorForAngle = (hallSector >= 0) ? hallSector :
+                            (sLastHallSectorSeen >= 0 ? sLastHallSectorSeen : 0);
+      angleDeg = CommutationElectricalAngleFromHallDeg(sectorForAngle);
+    } else {
+      angleDeg = CommutationElectricalAngleFromEncoderDeg(
+          EncoderGetPositionCounts(), sConfig.commutationCountsPerElecRev,
+          sConfig.commutationOffsetDeg);
+    }
+    sLastElectricalAngleDeg = angleDeg;
+    int32_t ia, ib;
+    CommutationComputePhases(torqueCommand, angleDeg, &ia, &ib);
+    OutputSetTwoPhaseCommand(ia, ib);
+    IndicatorSetState(sEnabled ? INDICATOR_RUNNING : INDICATOR_IDLE);
+    sLastTorqueCommand = torqueCommand;
+  }
+#endif
+  else {
     OutputSetTorqueCommand(torqueCommand);
     IndicatorSetState(sEnabled ? INDICATOR_RUNNING : INDICATOR_IDLE);
     sLastTorqueCommand = torqueCommand;
@@ -705,6 +1026,8 @@ int32_t AppGetLastVelocityActual(void) { return sLastVelocityActual; }
 int32_t AppGetLastTorqueCommand(void) { return sLastTorqueCommand; }
 int32_t AppGetLastCommandedPosition(void) { return sLastCommandedPosition; }
 int32_t AppGetLastCommandedVelocity(void) { return sLastCommandedVelocity; }
+int32_t AppGetLastElectricalAngleDeg(void) { return sLastElectricalAngleDeg; }
+int32_t AppGetLastHallSector(void) { return sLastHallSectorForTelemetry; }
 
 uint32_t AppGetLastTickCycles(void) { return sLastTickCycles; }
 uint32_t AppGetMaxTickCycles(void) { return sMaxTickCycles; }
@@ -730,6 +1053,8 @@ int main(void) {
   if (ConfigStoreLoad(&sConfig) == 0) {
     sMode = (ServoMode)sConfig.servoMode;
   }
+  sOutputTopology = (OutputTopology)sConfig.outputTopology;
+  OutputSetTopology(sOutputTopology);
   ApplyConfigToModules();
 
   EncoderInit();
@@ -744,13 +1069,17 @@ int main(void) {
   PositionMoveInit(&sPositionMove);
   FaultInit();
   SignalInit();
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
   AutotuneInit();
+#endif
   IndicatorInit();
   ProtocolInit();
   MonitorInit();
   UsbCompositeCdcInit();   /* channel 0: CLI (Protocol.c); channel 1: binary
                                telemetry (Monitor.c) -- see docs/monitor-protocol.md */
+#ifdef ANALOG_SERVO_HAS_UART
   UsartInit();
+#endif
 
   sPositionTargetAccum = EncoderGetPositionCounts();
   sLastCycles = DWT->CYCCNT;

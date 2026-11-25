@@ -10,7 +10,7 @@
  */
 #include <string.h>
 #include <stdlib.h>
-#include <stdio.h>
+#include "TinyFormat.h"
 #include <stddef.h>
 #include "Protocol.h"
 #include "main.h"
@@ -40,7 +40,20 @@ typedef struct {
 static void TxUsb(const uint8_t *data, uint16_t len) {
   while (CDCComposite_Transmit_Ch0((uint8_t *)data, len) == USBD_BUSY) { }
 }
+#ifdef ANALOG_SERVO_HAS_UART
 static void TxUart(const uint8_t *data, uint16_t len) { UsartTransmit(data, len); }
+#else
+/* usart_f1.c/usart_l1.c (and the HAL UART driver chain they pull in)
+ * aren't linked at all without ANALOG_SERVO_HAS_UART -- see
+ * platformio.ini's analog_servo_f103 build_src_filter comment --
+ * UsartTransmit() itself doesn't exist to call. sUartInst below keeps
+ * initializing .tx to this no-op rather than disappearing entirely: its
+ * RX ring never receives anything either (ProtocolRxFromIsrUart() is only
+ * ever invoked from usart_f1.c/usart_l1.c's own RX ISR, which also isn't
+ * linked), so TxUart never actually runs on this board -- only the
+ * function body (not UsartTransmit's own flash/HAL-chain cost) stays. */
+static void TxUart(const uint8_t *data, uint16_t len) { (void)data; (void)len; }
+#endif
 
 static ProtocolInstance sUsbInst  = { .tx = TxUsb };
 static ProtocolInstance sUartInst = { .tx = TxUart };
@@ -80,7 +93,7 @@ static void txStr(const char *s) {
 static void respKV(const char *key, const char *val) { txStr(key); txStr("="); txStr(val); txStr("\r\n"); }
 static void respKVi(const char *key, int32_t val) {
   char buf[16];
-  snprintf(buf, sizeof(buf), "%ld", (long)val);
+  TinyFormat(buf, sizeof(buf), "%ld", (long)val);
   respKV(key, buf);
 }
 static void respError(const char *reason) { txStr("error="); txStr(reason); txStr("\r\n"); }
@@ -144,6 +157,7 @@ static const char *SignalTypeName(SignalType t) {
 static const char *SignalTargetName(SignalTarget t) {
   return (t == SIGNAL_TARGET_POSITION) ? "position" : "torque";
 }
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
 static const char *AutotuneResultName(AutotuneResult r) {
   switch (r) {
     case AUTOTUNE_RESULT_OK:               return "ok";
@@ -158,47 +172,51 @@ static const char *AutotuneMethodName(AutotuneMethod m) {
     default:                  return "relay";
   }
 }
+#endif /* ANALOG_SERVO_HAS_AUTOTUNE */
+static const char *OutputTopologyName(OutputTopology t) {
+  return (t == OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG) ? "two_phase_analog" : "analog_torque";
+}
 
-static void getServoMode(char *b, size_t n) { snprintf(b, n, "%s", ServoModeName(AppGetServoMode())); }
+static void getServoMode(char *b, size_t n) { TinyFormat(b, n, "%s", ServoModeName(AppGetServoMode())); }
 static int  setServoMode(const char *v) {
   if (!strcmp(v, "stepdir"))  return AppSetServoMode(SERVO_MODE_STEPDIR);
   if (!strcmp(v, "host")) return AppSetServoMode(SERVO_MODE_VELOCITY);
   if (!strcmp(v, "analog"))   return AppSetServoMode(SERVO_MODE_ANALOG);
   return -1;
 }
-static void getServoEnabled(char *b, size_t n) { snprintf(b, n, "%d", AppGetEnabled()); }
+static void getServoEnabled(char *b, size_t n) { TinyFormat(b, n, "%d", AppGetEnabled()); }
 static int  setServoEnabled(const char *v) {
   int en;
   if (ParseBool(v, &en) != 0) return -1;
   AppSetEnabled(en);
   return 0;
 }
-static void getServoVelocityCmd(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetCommandedVelocity()); }
+static void getServoVelocityCmd(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetCommandedVelocity()); }
 static int  setServoVelocityCmd(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0) return -1;
   AppSetCommandedVelocity(val);
   return 0;
 }
-static void getServoPositionCmd(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetPositionCmd()); }
+static void getServoPositionCmd(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetPositionCmd()); }
 static int  setServoPositionCmd(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0) return -1;
   AppSetPositionCmd(val);
   return 0;
 }
-static void getServoPosition(char *b, size_t n) { snprintf(b, n, "%ld", (long)EncoderGetPositionCounts()); }
-static void getServoVelocity(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetLastVelocityActual()); }
+static void getServoPosition(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)EncoderGetPositionCounts()); }
+static void getServoVelocity(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetLastVelocityActual()); }
 static void getFollowingError(char *b, size_t n) {
   AppControlSample sample;
   AppGetControlSample(&sample);
-  snprintf(b, n, "%ld", (long)sample.followingError);
+  TinyFormat(b, n, "%ld", (long)sample.followingError);
 }
 /* These signals all come from the completed control-tick snapshot. */
 #define SAMPLE_GETTER(name, member) \
 static void name(char *b, size_t n) { \
   AppControlSample sample; AppGetControlSample(&sample); \
-  snprintf(b, n, "%ld", (long)sample.member); \
+  TinyFormat(b, n, "%ld", (long)sample.member); \
 }
 SAMPLE_GETTER(getPositionReference, positionReference)
 SAMPLE_GETTER(getVelocityReference, velocityReference)
@@ -207,12 +225,12 @@ SAMPLE_GETTER(getVelocityError, velocityError)
 SAMPLE_GETTER(getVelocityControlError, velocityControlError)
 static void getControlValid(char *b, size_t n) {
   AppControlSample sample; AppGetControlSample(&sample);
-  snprintf(b, n, "%u", (sample.flags & 8U) != 0);
+  TinyFormat(b, n, "%u", (sample.flags & 8U) != 0);
 }
 
-static void getServoTorqueCmd(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetLastTorqueCommand()); }
+static void getServoTorqueCmd(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetLastTorqueCommand()); }
 
-static void getGainsPosP(char *b, size_t n)   { snprintf(b, n, "%ld", (long)AppGetConfig()->posGainQ8); }
+static void getGainsPosP(char *b, size_t n)   { TinyFormat(b, n, "%ld", (long)AppGetConfig()->posGainQ8); }
 static int  setGainsPosP(const char *v) {
   int32_t val;
   /* A negative gain here is positive feedback (position/velocity error pushes the command
@@ -222,67 +240,67 @@ static int  setGainsPosP(const char *v) {
   AppSetGains(val, AppGetConfig()->velGainKpQ8, AppGetConfig()->velGainKiQ8);
   return 0;
 }
-static void getGainsVelKp(char *b, size_t n)  { snprintf(b, n, "%ld", (long)AppGetConfig()->velGainKpQ8); }
+static void getGainsVelKp(char *b, size_t n)  { TinyFormat(b, n, "%ld", (long)AppGetConfig()->velGainKpQ8); }
 static int  setGainsVelKp(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0) return -1;   /* see setGainsPosP's comment */
   AppSetGains(AppGetConfig()->posGainQ8, val, AppGetConfig()->velGainKiQ8);
   return 0;
 }
-static void getGainsVelKi(char *b, size_t n)  { snprintf(b, n, "%ld", (long)AppGetConfig()->velGainKiQ8); }
+static void getGainsVelKi(char *b, size_t n)  { TinyFormat(b, n, "%ld", (long)AppGetConfig()->velGainKiQ8); }
 static int  setGainsVelKi(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0) return -1;   /* see setGainsPosP's comment */
   AppSetGains(AppGetConfig()->posGainQ8, AppGetConfig()->velGainKpQ8, val);
   return 0;
 }
-static void getVelocityClamp(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->velocityClamp); }
+static void getVelocityClamp(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->velocityClamp); }
 static int  setVelocityClamp(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0) return -1;
   AppSetVelocityClamp(val);
   return 0;
 }
-static void getPositionMoveFeedforward(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->positionMoveFeedforwardQ8); }
+static void getPositionMoveFeedforward(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->positionMoveFeedforwardQ8); }
 static int setPositionMoveFeedforward(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0 || val > 256) return -1;
   AppSetPositionMoveFeedforward(val); return 0;
 }
-static void getAccelerationFeedforward(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->accelerationFeedforwardQ8); }
+static void getAccelerationFeedforward(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->accelerationFeedforwardQ8); }
 static int setAccelerationFeedforward(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0 || val > 8000000) return -1;
   AppSetAccelerationFeedforward(val); return 0;
 }
-static void getVelocityJerk(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->velocityJerk); }
+static void getVelocityJerk(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->velocityJerk); }
 static int setVelocityJerk(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0 || val > 10000000) return -1;
   AppSetVelocityJerk(val); return 0;
 }
-static void getVelocityFilterShift(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->velocityFilterShift); }
+static void getVelocityFilterShift(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->velocityFilterShift); }
 static int setVelocityFilterShift(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0 || val > 4) return -1;
   AppSetVelocityFilterShift(val);
   return 0;
 }
-static void getVelocityErrorDeadband(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->velocityErrorDeadbandCounts); }
+static void getVelocityErrorDeadband(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->velocityErrorDeadbandCounts); }
 static int setVelocityErrorDeadband(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0) return -1;
   AppSetVelocityErrorDeadband(val);
   return 0;
 }
-static void getCommandVelocityClamp(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->commandVelocityClamp); }
+static void getCommandVelocityClamp(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->commandVelocityClamp); }
 static int setCommandVelocityClamp(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0) return -1;
   AppSetCommandVelocityClamp(val);
   return 0;
 }
-static void getRampAccel(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->rampAccelCountsPerTickPerSec); }
+static void getRampAccel(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->rampAccelCountsPerTickPerSec); }
 static int  setRampAccel(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val <= 0) return -1;   /* 0/negative would mean "never ramp" --
@@ -291,14 +309,14 @@ static int  setRampAccel(const char *v) {
   AppSetRampAccel(val);
   return 0;
 }
-static void getTorqueClampMin(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->torqueClampMin); }
+static void getTorqueClampMin(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->torqueClampMin); }
 static int  setTorqueClampMin(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0) return -1;
   AppSetTorqueClamp(val, AppGetConfig()->torqueClampMax);
   return 0;
 }
-static void getTorqueClampMax(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->torqueClampMax); }
+static void getTorqueClampMax(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->torqueClampMax); }
 static int  setTorqueClampMax(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0) return -1;
@@ -306,7 +324,7 @@ static int  setTorqueClampMax(const char *v) {
   return 0;
 }
 
-static void getOutputZeroTrim(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->zeroTrim); }
+static void getOutputZeroTrim(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->zeroTrim); }
 static int  setOutputZeroTrim(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0) return -1;
@@ -314,46 +332,79 @@ static int  setOutputZeroTrim(const char *v) {
   return 0;
 }
 
-static void getDiagTickCycles(char *b, size_t n)   { snprintf(b, n, "%lu", (unsigned long)AppGetLastTickCycles()); }
-static void getDiagTickCyclesMax(char *b, size_t n) { snprintf(b, n, "%lu", (unsigned long)AppGetMaxTickCycles()); }
-static void getDiagTickLoadPct(char *b, size_t n)  { snprintf(b, n, "%ld", (long)AppGetLastTickLoadPct()); }
+/* output.topology/commutation.* -- `two-phase-output` draft-PR branch, see
+ * docs/two-phase-drive.md. Not bench-verified -- needs real Hall-sensor
+ * hardware nobody has yet. */
+static void getOutputTopology(char *b, size_t n) { TinyFormat(b, n, "%s", OutputTopologyName(AppGetOutputTopology())); }
+static int  setOutputTopology(const char *v) {
+  /* AppSetOutputTopology() rejects two_phase_analog on the default
+   * `analog_servo` build (ANALOG_SERVO_TWO_PHASE_DRIVE not defined) --
+   * see platformio.ini. */
+  if (!strcmp(v, "analog_torque"))    return AppSetOutputTopology(OUTPUT_TOPOLOGY_ANALOG_TORQUE);
+  if (!strcmp(v, "two_phase_analog")) return AppSetOutputTopology(OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG);
+  return -1;
+}
+static void getCommutationPolePairs(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->commutationPolePairs); }
+static int  setCommutationPolePairs(const char *v) {
+  int32_t val;
+  if (ParseI32(v, &val) != 0 || val <= 0) return -1;
+  AppSetCommutationConfig(val, AppGetConfig()->commutationCountsPerElecRev);
+  return 0;
+}
+static void getCommutationCountsPerElecRev(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->commutationCountsPerElecRev); }
+static int  setCommutationCountsPerElecRev(const char *v) {
+  int32_t val;
+  if (ParseI32(v, &val) != 0 || val <= 0) return -1;
+  AppSetCommutationConfig(AppGetConfig()->commutationPolePairs, val);
+  return 0;
+}
+static void getCommutationLearned(char *b, size_t n) { TinyFormat(b, n, "%d", AppGetConfig()->commutationLearned); }
+static void getCommutationOffsetDeg(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->commutationOffsetDeg); }
+static void getCommutationLearnActive(char *b, size_t n) { TinyFormat(b, n, "%d", AppCommutationLearnBusy()); }
+static void getCommutationLearnFailed(char *b, size_t n) { TinyFormat(b, n, "%d", AppGetCommutationLearnFailed()); }
+static void getCommutationDetectPolesActive(char *b, size_t n) { TinyFormat(b, n, "%d", AppCommutationDetectPolesBusy()); }
+static void getCommutationDetectPolesFailed(char *b, size_t n) { TinyFormat(b, n, "%d", AppGetCommutationDetectPolesFailed()); }
 
-static void getAnalogScale(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->analogVelocityScaleQ8); }
+static void getDiagTickCycles(char *b, size_t n)   { TinyFormat(b, n, "%lu", (unsigned long)AppGetLastTickCycles()); }
+static void getDiagTickCyclesMax(char *b, size_t n) { TinyFormat(b, n, "%lu", (unsigned long)AppGetMaxTickCycles()); }
+static void getDiagTickLoadPct(char *b, size_t n)  { TinyFormat(b, n, "%ld", (long)AppGetLastTickLoadPct()); }
+
+static void getAnalogScale(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->analogVelocityScaleQ8); }
 static int  setAnalogScale(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0) return -1;
   AppSetAnalogVelocityConfig(val, AppGetConfig()->analogVelocityHysteresisCounts);
   return 0;
 }
-static void getAnalogHysteresis(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->analogVelocityHysteresisCounts); }
+static void getAnalogHysteresis(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->analogVelocityHysteresisCounts); }
 static int  setAnalogHysteresis(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0) return -1;
   AppSetAnalogVelocityConfig(AppGetConfig()->analogVelocityScaleQ8, val);
   return 0;
 }
-static void getAnalogRawAdc(char *b, size_t n)  { snprintf(b, n, "%ld", (long)AppGetAnalogRawAdc()); }
-static void getAnalogReversed(char *b, size_t n) { snprintf(b, n, "%d", AppGetAnalogReversed()); }
+static void getAnalogRawAdc(char *b, size_t n)  { TinyFormat(b, n, "%ld", (long)AppGetAnalogRawAdc()); }
+static void getAnalogReversed(char *b, size_t n) { TinyFormat(b, n, "%d", AppGetAnalogReversed()); }
 
-static void getEnablePinAsserted(char *b, size_t n) { snprintf(b, n, "%d", AppGetHwEnableAsserted()); }
+static void getEnablePinAsserted(char *b, size_t n) { TinyFormat(b, n, "%d", AppGetHwEnableAsserted()); }
 
-static void getFollowingErrorLimit(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->followingErrorLimitCounts); }
+static void getFollowingErrorLimit(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->followingErrorLimitCounts); }
 static int  setFollowingErrorLimit(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0) return -1;
   AppSetFollowingErrorConfig(val, AppGetConfig()->followingErrorHardFault);
   return 0;
 }
-static void getFollowingErrorHardFault(char *b, size_t n) { snprintf(b, n, "%d", AppGetConfig()->followingErrorHardFault); }
+static void getFollowingErrorHardFault(char *b, size_t n) { TinyFormat(b, n, "%d", AppGetConfig()->followingErrorHardFault); }
 static int  setFollowingErrorHardFault(const char *v) {
   int en;
   if (ParseBool(v, &en) != 0) return -1;
   AppSetFollowingErrorConfig(AppGetConfig()->followingErrorLimitCounts, en);
   return 0;
 }
-static void getFollowingErrorActive(char *b, size_t n) { snprintf(b, n, "%d", FaultGetFollowingErrorActive()); }
+static void getFollowingErrorActive(char *b, size_t n) { TinyFormat(b, n, "%d", FaultGetFollowingErrorActive()); }
 
-static void getSustainedCurrentMinTorque(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->sustainedCurrentMinTorque); }
+static void getSustainedCurrentMinTorque(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->sustainedCurrentMinTorque); }
 static int  setSustainedCurrentMinTorque(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0) return -1;   /* 0 == disabled, same convention
@@ -361,7 +412,7 @@ static int  setSustainedCurrentMinTorque(const char *v) {
   AppSetSustainedCurrentConfig(val, AppGetConfig()->sustainedCurrentWindowTicks);
   return 0;
 }
-static void getSustainedCurrentWindowTicks(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetConfig()->sustainedCurrentWindowTicks); }
+static void getSustainedCurrentWindowTicks(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetConfig()->sustainedCurrentWindowTicks); }
 static int  setSustainedCurrentWindowTicks(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val <= 0) return -1;
@@ -369,22 +420,22 @@ static int  setSustainedCurrentWindowTicks(const char *v) {
   return 0;
 }
 
-static void getFaultLatched(char *b, size_t n) { snprintf(b, n, "%d", FaultIsLatched()); }
-static void getFaultReason(char *b, size_t n)  { snprintf(b, n, "%s", FaultReasonName(FaultGetReason())); }
+static void getFaultLatched(char *b, size_t n) { TinyFormat(b, n, "%d", FaultIsLatched()); }
+static void getFaultReason(char *b, size_t n)  { TinyFormat(b, n, "%s", FaultReasonName(FaultGetReason())); }
 
-static void getPolarityLearned(char *b, size_t n) { snprintf(b, n, "%d", AppGetConfig()->polarityLearned); }
-static void getPolaritySign(char *b, size_t n)     { snprintf(b, n, "%d", AppGetConfig()->polaritySign); }
-static void getPolarityLearnFailed(char *b, size_t n) { snprintf(b, n, "%d", AppGetPolarityLearnFailed()); }
-static void getPolarityLastMovedCounts(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppGetPolarityLearnMovedCounts()); }
+static void getPolarityLearned(char *b, size_t n) { TinyFormat(b, n, "%d", AppGetConfig()->polarityLearned); }
+static void getPolaritySign(char *b, size_t n)     { TinyFormat(b, n, "%d", AppGetConfig()->polaritySign); }
+static void getPolarityLearnFailed(char *b, size_t n) { TinyFormat(b, n, "%d", AppGetPolarityLearnFailed()); }
+static void getPolarityLastMovedCounts(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppGetPolarityLearnMovedCounts()); }
 
-static void getEncoderZSeen(char *b, size_t n) { snprintf(b, n, "%d", EncoderZWasSeenSinceEnable()); }
+static void getEncoderZSeen(char *b, size_t n) { TinyFormat(b, n, "%d", EncoderZWasSeenSinceEnable()); }
 
-static void getSignalActive(char *b, size_t n) { snprintf(b, n, "%d", AppGetSignalActive()); }
-static void getSignalType(char *b, size_t n)   { snprintf(b, n, "%s", SignalTypeName(AppGetSignalType())); }
-static void getSignalTarget(char *b, size_t n) { snprintf(b, n, "%s", SignalTargetName(AppGetSignalTarget())); }
+static void getSignalActive(char *b, size_t n) { TinyFormat(b, n, "%d", AppGetSignalActive()); }
+static void getSignalType(char *b, size_t n)   { TinyFormat(b, n, "%s", SignalTypeName(AppGetSignalType())); }
+static void getSignalTarget(char *b, size_t n) { TinyFormat(b, n, "%s", SignalTargetName(AppGetSignalTarget())); }
 
-static void getMonitorActive(char *b, size_t n) { snprintf(b, n, "%d", MonitorGetEnabled()); }
-static void getMonitorFreezePostTicks(char *b, size_t n) { snprintf(b, n, "%lu", (unsigned long)MonitorGetFreezePostTicks()); }
+static void getMonitorActive(char *b, size_t n) { TinyFormat(b, n, "%d", MonitorGetEnabled()); }
+static void getMonitorFreezePostTicks(char *b, size_t n) { TinyFormat(b, n, "%lu", (unsigned long)MonitorGetFreezePostTicks()); }
 static int  setMonitorFreezePostTicks(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0 || val < 0) return -1;
@@ -395,6 +446,15 @@ static int  setMonitorFreezePostTicks(const char *v) {
   return 0;
 }
 
+/* The whole `autotune.*`/`rls.*` CLI surface -- getters/setters, the
+ * `autotune` command, and the unsolicited progress lines -- is excluded on
+ * F103 along with its backing code (RLS.c/GainGlide.c/Autotune.c, see
+ * platformio.ini's analog_servo_f103 build_src_filter comment): the user
+ * wants the CLI surface gone there, not just degenerate (AppAutotuneBusy()
+ * et al already safely report "idle"/"none" either way -- see main.c's own
+ * #ifdef ANALOG_SERVO_HAS_AUTOTUNE split -- so none of this is needed for
+ * correctness, only for actually dropping the commands/variables). */
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
 /* relay and rls are mutually exclusive while running (cmdAutotuneStart()'s
  * guards) -- whichever is busy right now wins; once both are idle, prefer
  * whichever has a non-NONE result (relay by default, since it's checked
@@ -406,33 +466,33 @@ static int RlsIsTheActiveEngine(void) {
   if (AppAutotuneBusy()) return 0;
   return AppRlsGetResult() != AUTOTUNE_RESULT_NONE;
 }
-static void getAutotuneActive(char *b, size_t n) { snprintf(b, n, "%d", AppAutotuneBusy() || AppRlsBusy()); }
+static void getAutotuneActive(char *b, size_t n) { TinyFormat(b, n, "%d", AppAutotuneBusy() || AppRlsBusy()); }
 static void getAutotuneMethod(char *b, size_t n) {
   AutotuneMethod m = RlsIsTheActiveEngine() ? AUTOTUNE_METHOD_RLS : AppAutotuneGetMethod();
-  snprintf(b, n, "%s", AutotuneMethodName(m));
+  TinyFormat(b, n, "%s", AutotuneMethodName(m));
 }
 static void getAutotuneResult(char *b, size_t n) {
   AutotuneResult r = RlsIsTheActiveEngine() ? AppRlsGetResult() : AppAutotuneGetResult();
-  snprintf(b, n, "%s", AutotuneResultName(r));
+  TinyFormat(b, n, "%s", AutotuneResultName(r));
 }
 static void getAutotuneKpResult(char *b, size_t n) {
   int32_t kp = RlsIsTheActiveEngine() ? AppRlsGetKpResultQ8() : AppAutotuneGetKpResultQ8();
-  snprintf(b, n, "%ld", (long)kp);
+  TinyFormat(b, n, "%ld", (long)kp);
 }
 static void getAutotuneKiResult(char *b, size_t n) {
   int32_t ki = RlsIsTheActiveEngine() ? AppRlsGetKiResultQ8() : AppAutotuneGetKiResultQ8();
-  snprintf(b, n, "%ld", (long)ki);
+  TinyFormat(b, n, "%ld", (long)ki);
 }
-static void getAutotunePosPResult(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppAutotuneGetPosPResultQ8()); }
-static void getAutotunePeriod(char *b, size_t n) { snprintf(b, n, "%lu", (unsigned long)AppAutotuneGetMeasuredPeriodTicks()); }
-static void getAutotuneGain(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppAutotuneGetMeasuredGainQ8()); }
+static void getAutotunePosPResult(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppAutotuneGetPosPResultQ8()); }
+static void getAutotunePeriod(char *b, size_t n) { TinyFormat(b, n, "%lu", (unsigned long)AppAutotuneGetMeasuredPeriodTicks()); }
+static void getAutotuneGain(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppAutotuneGetMeasuredGainQ8()); }
 
-static void getRlsActive(char *b, size_t n) { snprintf(b, n, "%d", AppRlsBusy()); }
-static void getRlsThetaA(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppRlsGetThetaAQ8()); }
-static void getRlsThetaB(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppRlsGetThetaBQ8()); }
-static void getRlsPTrace(char *b, size_t n) { snprintf(b, n, "%lld", (long long)AppRlsGetPTrace()); }
-static void getRlsTicks(char *b, size_t n) { snprintf(b, n, "%lu", (unsigned long)AppRlsGetTicksObserved()); }
-static void getRlsAggressiveness(char *b, size_t n) { snprintf(b, n, "%ld", (long)AppRlsGetAggressiveness()); }
+static void getRlsActive(char *b, size_t n) { TinyFormat(b, n, "%d", AppRlsBusy()); }
+static void getRlsThetaA(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppRlsGetThetaAQ8()); }
+static void getRlsThetaB(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppRlsGetThetaBQ8()); }
+static void getRlsPTrace(char *b, size_t n) { TinyFormat(b, n, "%lld", (long long)AppRlsGetPTrace()); }
+static void getRlsTicks(char *b, size_t n) { TinyFormat(b, n, "%lu", (unsigned long)AppRlsGetTicksObserved()); }
+static void getRlsAggressiveness(char *b, size_t n) { TinyFormat(b, n, "%ld", (long)AppRlsGetAggressiveness()); }
 static int setRlsAggressiveness(const char *v) {
   int32_t val;
   if (ParseI32(v, &val) != 0) return -1;
@@ -440,6 +500,7 @@ static int setRlsAggressiveness(const char *v) {
                                        the clamped value actually stored, not the raw request */
   return 0;
 }
+#endif /* ANALOG_SERVO_HAS_AUTOTUNE */
 
 /* Wire integers use explicit fractional bits, avoiding ambiguous Q16/Q8
  * labels: value = raw / 2^fractional_bits. Torque units are normalized command
@@ -451,6 +512,11 @@ static int setRlsAggressiveness(const char *v) {
 #define BOOL_META "\"type\":\"bool\",\"unit\":\"boolean\",\"choices\":[\"0\",\"1\"]"
 #define ENUM_META(values) "\"type\":\"enum\",\"unit\":\"name\",\"choices\":[" values "]"
 #define TORQUE_META INT_META("torque_unit") ",\"full_scale\":32767"
+#ifdef ANALOG_SERVO_TWO_PHASE_DRIVE
+#define TOPOLOGY_CHOICES "\"analog_torque\",\"two_phase_analog\""
+#else
+#define TOPOLOGY_CHOICES "\"analog_torque\""
+#endif
 
 static const var_entry_t kVars[] = {
   { "axis.enabled",      getServoEnabled,      setServoEnabled, BOOL_META },
@@ -492,6 +558,15 @@ static const var_entry_t kVars[] = {
   { "torque.sustained_threshold",   getSustainedCurrentMinTorque,   setSustainedCurrentMinTorque, TORQUE_META },
   { "torque.sustained_ticks", getSustainedCurrentWindowTicks, setSustainedCurrentWindowTicks, INT_META("tick") },
   { "output.trim",   getOutputZeroTrim,    setOutputZeroTrim, TORQUE_META },
+  { "output.topology",    getOutputTopology,    setOutputTopology, ENUM_META(TOPOLOGY_CHOICES) },
+  { "commutation.pole_pairs",         getCommutationPolePairs,         setCommutationPolePairs, INT_META("pole_pair") },
+  { "commutation.counts_per_elec_rev", getCommutationCountsPerElecRev, setCommutationCountsPerElecRev, INT_META("encoder_count/electrical_revolution") },
+  { "commutation.learned",      getCommutationLearned,     NULL, BOOL_META },
+  { "commutation.offset_deg",   getCommutationOffsetDeg,   NULL, INT_META("degree") },
+  { "commutation.learn_active", getCommutationLearnActive, NULL, BOOL_META },
+  { "commutation.learn_failed", getCommutationLearnFailed, NULL, BOOL_META },
+  { "commutation.detect_poles_active", getCommutationDetectPolesActive, NULL, BOOL_META },
+  { "commutation.detect_poles_failed", getCommutationDetectPolesFailed, NULL, BOOL_META },
   { "output.polarity_learned",   getPolarityLearned,   NULL, BOOL_META },
   { "output.polarity",      getPolaritySign,      NULL, INT_META("sign") },
   { "output.polarity_failed",      getPolarityLearnFailed,     NULL, BOOL_META },
@@ -504,6 +579,7 @@ static const var_entry_t kVars[] = {
   { "test.target",      getSignalTarget,      NULL, ENUM_META("\"torque\",\"position\"") },
   { "monitor.active",     getMonitorActive,     NULL, BOOL_META },
   { "monitor.post_trigger_ticks", getMonitorFreezePostTicks, setMonitorFreezePostTicks, UINT_META("tick") },
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
   { "autotune.active",       getAutotuneActive,     NULL, BOOL_META },
   { "autotune.method",       getAutotuneMethod,     NULL, ENUM_META("\"relay\",\"rls\"") },
   { "autotune.result",       getAutotuneResult,     NULL, ENUM_META("\"none\",\"ok\",\"no_oscillation\",\"bad_measurement\"") },
@@ -522,6 +598,7 @@ static const var_entry_t kVars[] = {
   { "autotune.rls_p_trace",  getRlsPTrace,          NULL, I64_META("reserved") },
   { "autotune.rls_ticks",    getRlsTicks,           NULL, UINT_META("tick") },
   { "autotune.rls_aggressiveness", getRlsAggressiveness, setRlsAggressiveness, INT_META("pole_squarings") },
+#endif /* ANALOG_SERVO_HAS_AUTOTUNE */
   { "diag.tick_cycles",     getDiagTickCycles,     NULL, UINT_META("cpu_cycle") },
   { "diag.tick_cycles_max", getDiagTickCyclesMax,  NULL, UINT_META("cpu_cycle") },
   { "diag.tick_load_pct",   getDiagTickLoadPct,    NULL, INT_META("percent") },
@@ -549,7 +626,7 @@ static void txJsonString(const char *value) {
     char escaped[7];
     size_t len;
     if (*p == '"' || *p == '\\') { escaped[0] = '\\'; escaped[1] = (char)*p; len = 2; }
-    else if (*p < 32) { snprintf(escaped, sizeof(escaped), "\\u%04x", (unsigned)*p); len = 6; }
+    else if (*p < 32) { TinyFormat(escaped, sizeof(escaped), "\\u%04x", (unsigned)*p); len = 6; }
     else { escaped[0] = (char)*p; len = 1; }
     if (n + len > sizeof(buffer)) { sActive->tx((uint8_t *)buffer, (uint16_t)n); n = 0; }
     memcpy(buffer + n, escaped, len); n += len;
@@ -618,7 +695,7 @@ static void cmdSample(int argc, char **argv) {
   AppControlSample sample;
   char buffer[96];
   AppGetControlSample(&sample);
-  snprintf(buffer, sizeof(buffer), "sample=%lu,%ld,%ld,%ld,%ld,%lu",
+  TinyFormat(buffer, sizeof(buffer), "sample=%lu,%ld,%ld,%ld,%ld,%lu",
            (unsigned long)sample.tick, (long)sample.position, (long)sample.velocity,
            (long)sample.torque, (long)sample.followingError, (unsigned long)sample.flags);
   txStr(buffer); txStr("\r\n");
@@ -681,12 +758,43 @@ static void cmdPosition(int argc, char **argv) {
   if (argc != 2 || strcmp(argv[1], "zero")) { respError("usage: position zero"); return; }
   int result = AppResetPosition();
   if (result == -2) respError("position zero requires disabled, stationary axis with no active test");
+  else if (result == -3) respError("position zero is unavailable with two-phase commutation");
   else if (result != 0) respError("position zero failed");
 }
 
 static void cmdOutput(int argc, char **argv) {
   if (argc != 2 || strcmp(argv[1], "learn_polarity")) { respError("usage: output learn_polarity"); return; }
   AppPolarityLearn(); respKV("state", "learning");
+}
+
+static void cmdCommutation(int argc, char **argv) {
+  static const char *usage = "usage: commutation <learn | detect_poles <encoder_cpr>>";
+  if (argc < 2) { respError(usage); return; }
+  if (!strcmp(argv[1], "learn")) {
+    if (AppGetOutputTopology() != OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG) {
+      respError("requires output.topology=two_phase_analog");
+      return;
+    }
+    AppCommutationLearn();
+    respKV("state", "learning");
+    return;
+  }
+  if (!strcmp(argv[1], "detect_poles")) {
+    if (AppGetOutputTopology() != OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG) {
+      respError("requires output.topology=two_phase_analog");
+      return;
+    }
+    if (argc < 3) { respError(usage); return; }
+    int32_t encoderCpr;
+    if (ParseI32(argv[2], &encoderCpr) != 0 || encoderCpr <= 0) {
+      respError("invalid encoder_cpr");
+      return;
+    }
+    AppCommutationDetectPoles(encoderCpr);
+    respKV("state", "detecting");
+    return;
+  }
+  respError(usage);
 }
 
 static void cmdSignal(int argc, char **argv) {
@@ -718,6 +826,7 @@ static void cmdSignal(int argc, char **argv) {
   respError("unknown test subcommand");
 }
 
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
 #define RLS_DEFAULT_LAMBDA_Q8  256   /* 1.0, no forgetting -- the stable default; see RLS.c's
                                          file comment on forgetting-factor RLS "bursting" under
                                          near-noiseless tracking before loosening this */
@@ -794,6 +903,7 @@ static void cmdAutotune(int argc, char **argv) {
   if (!strcmp(argv[1], "start")) { cmdAutotuneStart(argc, argv); return; }
   respError("unknown autotune subcommand");
 }
+#endif /* ANALOG_SERVO_HAS_AUTOTUNE */
 
 static void cmdMonitor(int argc, char **argv) {
   if (argc < 2) { respError("usage: monitor <start|stop|dump|schema>"); return; }
@@ -871,10 +981,14 @@ static const cmd_t kCommands[] = {
   { "fault",    cmdFault,    "<clear|freeze> -- clear a latched hard fault, or dump the freeze frame" },
   { "position", cmdPosition, "zero -- reset coordinates while disabled and stationary" },
   { "output", cmdOutput, "learn_polarity -- one-time polarity commissioning step" },
+  { "commutation", cmdCommutation,
+    "<learn | detect_poles <encoder_cpr>> -- alignment commissioning / pole-count detection (two_phase_analog only)" },
   { "test",     cmdSignal,   "<impulse <amp> | square <torque|position> <amp> <half_period_ticks> [duration] | stop>" },
   { "monitor",  cmdMonitor,  "<start|stop|dump|schema> -- toggle the channel-1 binary telemetry stream, dump recorded history to it, or print its frame schema as JSON" },
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
   { "autotune", cmdAutotune,
     "<start relay <amp> [max_ticks] | start rls [lambda_q8] [glide_ms] | stop | apply>" },
+#endif
   { "config",   cmdConfig,   "<save|load|defaults> -- flash config persistence" },
   { NULL, NULL, NULL },
 };
@@ -913,6 +1027,7 @@ static void PollInstance(ProtocolInstance *inst) {
   }
 }
 
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
 /* A relay run can take up to its ~20s default timeout of otherwise-silent
  * tick-by-tick state cycling -- print a periodic status line on both
  * transports (unsolicited, so it doesn't go through sActive/respKV) rather
@@ -934,7 +1049,7 @@ static void PollAutotuneProgress(void) {
    * AUTOTUNE_HYSTERESIS_COUNTS=2) the mechanism isn't producing a
    * velocity signal relay can switch on at all. */
   char buf[96];
-  int n = snprintf(buf, sizeof(buf),
+  int n = TinyFormat(buf, sizeof(buf),
                 "autotune.progress ticks=%lu/%lu switches=%lu/%lu peak_vel=%ld\r\n",
                 (unsigned long)AppAutotuneGetRelayProgressTicksElapsed(),
                 (unsigned long)AppAutotuneGetRelayProgressMaxTicks(),
@@ -963,7 +1078,7 @@ static void PollRlsProgress(void) {
   sLastPrintedRlsProgressSeq = seq;
 
   char buf[96];
-  int n = snprintf(buf, sizeof(buf),
+  int n = TinyFormat(buf, sizeof(buf),
                 "autotune.rls_progress ticks=%lu a=%ld b=%ld kp=%ld ki=%ld p_trace=%lld\r\n",
                 (unsigned long)AppRlsGetTicksObserved(),
                 (long)AppRlsGetThetaAQ8(), (long)AppRlsGetThetaBQ8(),
@@ -973,6 +1088,7 @@ static void PollRlsProgress(void) {
   sUsbInst.tx((const uint8_t *)buf, (uint16_t)n);
   sUartInst.tx((const uint8_t *)buf, (uint16_t)n);
 }
+#endif /* ANALOG_SERVO_HAS_AUTOTUNE */
 
 void ProtocolInit(void) {
   sUsbInst.head = sUsbInst.tail = 0;
@@ -981,13 +1097,17 @@ void ProtocolInit(void) {
   sUartInst.head = sUartInst.tail = 0;
   sUartInst.len = 0;
   sUartInst.pendEol = 0;
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
   sLastPrintedRelayProgressSeq = 0U;
   sLastPrintedRlsProgressSeq = 0U;
+#endif
 }
 
 void ProtocolPoll(void) {
   PollInstance(&sUsbInst);
   PollInstance(&sUartInst);
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
   PollAutotuneProgress();
   PollRlsProgress();
+#endif
 }

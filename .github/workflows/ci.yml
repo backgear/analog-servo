@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        environment: [analog_servo, analog_servo_f103]
+        environment: [analog_servo, analog_servo_f103, analog_servo_two_phase]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -74,3 +74,33 @@ jobs:
         run: test -f "$SIMMY_DIR/include/simmy.h"
       - name: Run host-tool and simulation tests
         run: python -m unittest discover -s tools -p 'test_*.py' -v
+
+  # Separate from host-tests above on purpose: that job pins to a known
+  # published Simmy commit (f9ead095...) that predates examples/pmsm_foc.h/
+  # foc_transforms.h landing on simmy's main (backgear/simmy#3) -- bumping
+  # that pin to pick up these two tests would also re-run every other
+  # test_*.py there against a newer Simmy than it's actually pinned to.
+  # This job checks out simmy's current main instead, explicitly for just
+  # these two tests, named directly rather than via `discover` so this step
+  # can't accidentally pick up tools/test_simmy_plot.py too, which is
+  # unrelated and (as of this writing) fails to link against simmy's
+  # current main -- see tools/test_simmy_*_integration.py's own header
+  # comments for what each of these two actually proves.
+  two-phase-simmy-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout simmy
+        uses: actions/checkout@v4
+        with:
+          repository: backgear/simmy
+          path: simmy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require Simmy's PMSM FOC example (examples/pmsm_foc.h)
+        run: test -f "${{ github.workspace }}/simmy/examples/pmsm_foc.h"
+      - name: Simmy plant simulation-integration tests
+        env:
+          SIMMY_DIR: ${{ github.workspace }}/simmy
+        run: python3 -m unittest tools.test_simmy_foc_integration tools.test_simmy_commutation_learn_integration -v

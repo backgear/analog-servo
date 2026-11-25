@@ -6,9 +6,56 @@ an offline converter) shouldn't have to pull that in too.
 """
 import struct
 
-FRAME_LEN = 32   # was 28 before velocityIntegral (diagnostic, i32) was added
 SYNC_BYTE = 0xAA
-STRUCT_FMT = "<BIiiiiiiBBB"
+
+# Declarative mirror of Monitor.c's AppendSchema() calls (what
+# MonitorGetSchemaJson() serves as `monitor schema`): field name and wire
+# type, in wire order. STRUCT_FMT/FRAME_LEN/FIELD_OFFSETS below are all
+# DERIVED from this list by struct_format()/field_offsets(), not
+# hand-typed -- a field added or removed here is the only change needed on
+# the Python side. This is exactly the discipline Monitor.h's own doc
+# comment on MonitorGetSchemaJson() asks host tools to follow (derive from
+# the schema, don't cache a hand-copied struct) -- see
+# tools/sigrok/monitor_frames.py and tools/test_sigrok_monitor.py, which
+# both import FIELD_OFFSETS instead of hardcoding byte positions, for the
+# bug that hand-copying caused when this frame last grew (commutation_offset_deg
+# was the 4th field added since FRAME_LEN was 20: commandedPosition/
+# commandedVelocity, then velocityIntegral on `main` independently, then
+# electricalAngleDeg, then hallSector, then this one).
+FIELDS = (
+    ("sync", "u8"), ("seq", "u32"), ("position", "i32"), ("velocity", "i32"),
+    ("torque_command", "i32"), ("commanded_position", "i32"), ("commanded_velocity", "i32"),
+    ("velocity_integral", "i32"), ("electrical_angle_deg", "i32"), ("hall_sector", "i32"),
+    ("commutation_offset_deg", "i32"), ("status", "u8"), ("fault_reason", "u8"), ("crc8", "u8"),
+)
+
+_WIRE_TYPE_CHAR = {"u8": "B", "u32": "I", "i32": "i"}
+
+
+def struct_format(fields):
+    """(name, type) pairs in wire order -> a little-endian struct.unpack
+    format string. Takes the same shape MonitorGetSchemaJson()'s "fields"
+    list uses (name/type; offset is derived here instead of read, so a
+    live-fetched schema works the same way as the FIELDS literal above).
+    Assumes no padding between fields, true of any __attribute__((packed))
+    struct like MonitorFrame."""
+    return "<" + "".join(_WIRE_TYPE_CHAR[kind] for _, kind in fields)
+
+
+def field_offsets(fields):
+    """(name, type) pairs -> {name: byte offset}, walked in the same order
+    struct_format() encodes -- so this always agrees with STRUCT_FMT's
+    actual layout, including after FIELDS gains or loses a field."""
+    offsets, pos = {}, 0
+    for name, kind in fields:
+        offsets[name] = pos
+        pos += struct.calcsize("<" + _WIRE_TYPE_CHAR[kind])
+    return offsets
+
+
+STRUCT_FMT = struct_format(FIELDS)
+FRAME_LEN = struct.calcsize(STRUCT_FMT)
+FIELD_OFFSETS = field_offsets(FIELDS)
 
 MODE_NAMES = ("stepdir", "host", "analog")
 FAULT_REASON_NAMES = ("none", "polarity", "zero_encoder", "endstop", "following_error", "sustained_current")
@@ -30,7 +77,8 @@ def decode_frame(data):
     a dict on a valid frame (CRC-8 checks out and fault_reason is in
     range), None on a false lock."""
     (sync, seq, position, velocity, torque, cmd_position, cmd_velocity, velocity_integral,
-     status, fault_reason, frame_crc) = struct.unpack(STRUCT_FMT, data)
+     electrical_angle_deg, hall_sector, commutation_offset_deg, status, fault_reason,
+     frame_crc) = struct.unpack(STRUCT_FMT, data)
 
     if crc8(data[:-1]) != frame_crc:
         return None
@@ -46,6 +94,19 @@ def decode_frame(data):
         "cmd_velocity": cmd_velocity,
         # Divide by 65536.0 for torque-command units.
         "velocity_integral_q16": velocity_integral,
+        # Commutation.c's electrical angle (degrees, 0..359),
+        # output.topology=two_phase_analog only -- see docs/two-phase-drive.md.
+        # Stale at 0 on any build/run that never drives that topology.
+        "electrical_angle_deg": electrical_angle_deg,
+        # RAW Hall sector (0..5, or -1 for an invalid/wiring-fault state --
+        # see Hall.h), NOT the derived electrical_angle_deg above --
+        # output.topology=two_phase_analog only; stale at 0 otherwise.
+        "hall_sector": hall_sector,
+        # ConfigStore's commutation.offset_deg -- the LEARNED alignment
+        # offset `commutation learn` persists (see docs/two-phase-drive.md).
+        # 0 until a successful learn attempt; not gated to two-phase-active
+        # like the two fields above, since it's a plain config read.
+        "commutation_offset_deg": commutation_offset_deg,
         "mode": MODE_NAMES[status & 0x3],
         "enabled": bool((status >> 2) & 1),
         "fault_latched": bool((status >> 3) & 1),

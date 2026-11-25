@@ -17,7 +17,7 @@
 
 '''
 This decoder stacks on the 'uart' PD and decodes analog-servo's Monitor.c
-20-byte binary telemetry frame (see docs/monitor-protocol.md for the full
+44-byte binary telemetry frame (see docs/monitor-protocol.md for the full
 frame layout):
 
   offset  size  field
@@ -26,12 +26,35 @@ frame layout):
   5       4     positionCounts (int32 LE)
   9       4     velocityCounts (int32 LE)
   13      4     torqueCommand (int32 LE)
-  17      1     status (bits0-1 mode, bit2 enabled, bit3 fault latched,
+  17      4     commandedPosition (int32 LE, DESIRED not measured -- stale,
+                 not wrong, while no branch is pursuing a position target)
+  21      4     commandedVelocity (int32 LE, same staleness caveat)
+  25      4     velocityIntegral (int32 LE, diagnostic velocity-loop PI
+                 integrator state, torque units * 65536, bounded by the
+                 configured torque clamp -- see Control.c)
+  29      4     electricalAngleDeg (int32 LE, degrees 0..359 --
+                 output.topology=two_phase_analog only, see
+                 docs/two-phase-drive.md; stays 0 on any build/run that
+                 never drives that topology)
+  33      4     hallSector (int32 LE, RAW Hall sector 0..5, or -1 for an
+                 invalid/wiring-fault state -- see Hall.h; NOT the derived
+                 electricalAngleDeg above, so a backward Hall wire or an
+                 out-of-sequence sector transition shows up directly instead
+                 of only as a possibly-plausible-looking wrong angle.
+                 output.topology=two_phase_analog only; stays 0 on any
+                 build/run that never drives that topology)
+  37      4     commutationOffsetDeg (int32 LE, ConfigStore's
+                 commutation.offset_deg -- the LEARNED alignment offset
+                 `commutation learn` persists, see docs/two-phase-drive.md;
+                 0 until a successful learn attempt. Unlike
+                 electricalAngleDeg/hallSector above, this is a plain
+                 config read, not gated to a live two-phase branch)
+  41      1     status (bits0-1 mode, bit2 enabled, bit3 fault latched,
                  bit4 reserved (was idle reduced, Idle.c -- deleted, always 0
                  now), bit5 hw enable asserted, bit6 synthetic,
                  bit7 cycle_start -- see docs/monitor-protocol.md)
-  18      1     faultReason
-  19      1     crc8 (poly 0x07, init 0, MSB-first, over bytes 0..18)
+  42      1     faultReason
+  43      1     crc8 (poly 0x07, init 0, MSB-first, over bytes 0..42)
 
 Config-tier values (gains, etc.) are deliberately not in this frame -- it's
 real-time state only; query config via the text CLI instead. See

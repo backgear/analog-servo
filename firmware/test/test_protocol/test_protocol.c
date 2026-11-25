@@ -67,6 +67,38 @@ static int     sHwEnableAsserted = 1;   /* defaults to asserted -- most tests do
 int32_t AppGetAnalogRawAdc(void) { return sAnalogRawAdc; }
 int     AppGetAnalogReversed(void) { return sAnalogReversed; }
 int     AppGetHwEnableAsserted(void) { return sHwEnableAsserted; }
+
+/* ---- output.topology/commutation.* stubs (`two-phase-output` branch) ---
+ * AppSetOutputTopology() rejects two_phase_analog here, mirroring the real
+ * main.c's behavior when ANALOG_SERVO_TWO_PHASE_DRIVE isn't defined -- same
+ * as this native env, see platformio.ini. Tests that need to exercise the
+ * deeper commutation-learn/detect_poles dispatch set sOutputTopology
+ * directly, bypassing the CLI-level rejection, same spirit as other tests
+ * here poking stub state directly (e.g. sPolarityLearnFailed). */
+static OutputTopology sOutputTopology = OUTPUT_TOPOLOGY_ANALOG_TORQUE;
+static int     sCommutationLearnCalls = 0;
+static int     sCommutationDetectPolesCalls = 0;
+static int32_t sCommutationDetectPolesLastCpr = 0;
+OutputTopology AppGetOutputTopology(void) { return sOutputTopology; }
+int AppSetOutputTopology(OutputTopology t) {
+  if (t == OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG) return -1;
+  sOutputTopology = t;
+  sConfig.outputTopology = (uint8_t)t;
+  return 0;
+}
+void AppSetCommutationConfig(int32_t p, int32_t c) {
+  sConfig.commutationPolePairs = p;
+  sConfig.commutationCountsPerElecRev = c;
+}
+void AppCommutationLearn(void) { sCommutationLearnCalls++; }
+int  AppCommutationLearnBusy(void) { return 0; }
+int  AppGetCommutationLearnFailed(void) { return 0; }
+void AppCommutationDetectPoles(int32_t encoderCpr) {
+  sCommutationDetectPolesCalls++;
+  sCommutationDetectPolesLastCpr = encoderCpr;
+}
+int  AppCommutationDetectPolesBusy(void) { return 0; }
+int  AppGetCommutationDetectPolesFailed(void) { return 0; }
 static uint32_t sDiagTickCycles = 0, sDiagMaxTickCycles = 0;
 static int32_t  sDiagTickLoadPct = 0;
 uint32_t AppGetLastTickCycles(void) { return sDiagTickCycles; }
@@ -115,6 +147,9 @@ int32_t AppGetLastVelocityActual(void) { return sLastVelocityActual; }
 int32_t AppGetLastTorqueCommand(void) { return sLastTorqueCommand; }
 int32_t AppGetLastCommandedPosition(void) { return sLastCommandedPosition; }
 int32_t AppGetLastCommandedVelocity(void) { return sLastCommandedVelocity; }
+int32_t AppGetLastElectricalAngleDeg(void) { return 0; }   /* no test here drives
+    the two-phase branch -- see test_commutation.c/test_hall.c for that math */
+int32_t AppGetLastHallSector(void) { return 0; }   /* same -- no test here drives it */
 int        AppGetSignalCycleStart(void) { return 0; }
 
 static int      sAutotuneStartRelayCalls = 0;
@@ -241,6 +276,7 @@ static int sPositionResetCalls;
 int AppResetPosition(void) {
   sPositionResetCalls++;
   if (sEnabled || sLastVelocityActual || sAutotuneActive || sSignalActive) return -2;
+  if (sOutputTopology == OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG) return -3;
   sPosition = sPositionCmd = sCommandedVelocity = 0;
   return 0;
 }
@@ -302,6 +338,10 @@ void setUp(void) {
   sLastVelocityActual = sLastTorqueCommand = 0;
   sPosition = 0;
   sZSeen = 0;
+  sOutputTopology = OUTPUT_TOPOLOGY_ANALOG_TORQUE;
+  sCommutationLearnCalls = 0;
+  sCommutationDetectPolesCalls = 0;
+  sCommutationDetectPolesLastCpr = 0;
   FaultInit();
   FaultSetFollowingErrorConfig(0, 0);
   capReset();
@@ -331,6 +371,7 @@ static void test_help_lists_commands(void) {
   run("help");
   TEST_ASSERT_NOT_NULL(strstr(cap, "get <name>"));
   TEST_ASSERT_NOT_NULL(strstr(cap, "config <save|load|defaults>"));
+  TEST_ASSERT_NOT_NULL(strstr(cap, "commutation"));
 }
 
 static void test_schema_describes_wire_types_units_and_choices(void) {
@@ -342,6 +383,11 @@ static void test_schema_describes_wire_types_units_and_choices(void) {
   TEST_ASSERT_NOT_NULL(strstr(cap, "\"position.raw\":{\"access\":\"ro\""));
   TEST_ASSERT_NOT_NULL(strstr(cap, "\"fractional_bits\":8,\"unit\":\"1/tick\""));
   TEST_ASSERT_NOT_NULL(strstr(cap, "\"unit\":\"torque_unit\",\"full_scale\":32767"));
+  /* ANALOG_SERVO_TWO_PHASE_DRIVE isn't defined in this native env (same as
+   * the real analog_servo board env) -- output.topology only advertises
+   * analog_torque; two_phase_analog only appears once the
+   * `two-phase-output` branch's own env defines the flag. */
+  TEST_ASSERT_NOT_NULL(strstr(cap, "\"output.topology\":{\"access\":\"rw\",\"type\":\"enum\",\"unit\":\"name\",\"choices\":[\"analog_torque\"]"));
   TEST_ASSERT_NOT_NULL(strstr(cap, "}}\r\n\r\n"));
   TEST_ASSERT_EQUAL_INT32(0, sEnabled);
   TEST_ASSERT_EQUAL_INT32(0, sConfigSaveCalls);
@@ -460,6 +506,8 @@ static void test_settings_dumps_every_var(void) {
   TEST_ASSERT_NOT_NULL(strstr(cap, "input.source="));
   TEST_ASSERT_NOT_NULL(strstr(cap, "velocity.ki="));
   TEST_ASSERT_NOT_NULL(strstr(cap, "output.polarity="));
+  TEST_ASSERT_NOT_NULL(strstr(cap, "output.topology="));
+  TEST_ASSERT_NOT_NULL(strstr(cap, "commutation.pole_pairs="));
   TEST_ASSERT_NOT_NULL(strstr(cap, "encoder.index_seen="));
 }
 
@@ -596,14 +644,22 @@ static void test_monitor_schema_json_describes_the_real_frame(void) {
   TEST_ASSERT_EQUAL_INT32('{', json[0]);
   /* frame_size/sync come from sizeof(MonitorFrame)/MONITOR_FRAME_SYNC, not
    * hand-typed -- these two literal checks lock in today's known-correct
-   * values (32 bytes, sync 0xAA = 170) as a regression guard, same as the
-   * rest of this file pins other known-good behavior. */
-  TEST_ASSERT_NOT_NULL(strstr(json, "\"frame_size\":32"));
+   * values (44 bytes, sync 0xAA = 170) as a regression guard, same as the
+   * rest of this file pins other known-good behavior. 44, not 32 -- two
+   * independent growths landed on top of each other in the same rebase:
+   * `main`'s velocityIntegral (4 bytes, right after commandedVelocity) and
+   * this branch's electricalAngleDeg/hallSector/commutationOffsetDeg (12
+   * bytes, right after velocityIntegral), so status/faultReason/crc8 shift
+   * by +16 total (see Monitor.c). */
+  TEST_ASSERT_NOT_NULL(strstr(json, "\"frame_size\":44"));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"sync\":170"));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"name\":\"seq\",\"offset\":1,\"size\":4,\"type\":\"u32\""));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"name\":\"torque_command\",\"offset\":13,\"size\":4,\"type\":\"i32\""));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"name\":\"velocity_integral\",\"offset\":25,\"size\":4,\"type\":\"i32\""));
-  TEST_ASSERT_NOT_NULL(strstr(json, "\"name\":\"crc8\",\"offset\":31,\"size\":1,\"type\":\"u8\""));
+  TEST_ASSERT_NOT_NULL(strstr(json, "\"name\":\"electrical_angle_deg\",\"offset\":29,\"size\":4,\"type\":\"i32\""));
+  TEST_ASSERT_NOT_NULL(strstr(json, "\"name\":\"hall_sector\",\"offset\":33,\"size\":4,\"type\":\"i32\""));
+  TEST_ASSERT_NOT_NULL(strstr(json, "\"name\":\"commutation_offset_deg\",\"offset\":37,\"size\":4,\"type\":\"i32\""));
+  TEST_ASSERT_NOT_NULL(strstr(json, "\"name\":\"crc8\",\"offset\":43,\"size\":1,\"type\":\"u8\""));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"cycle_start\":7"));
   /* Same name list Protocol.c's `fault.reason` ENUM_META quotes -- both
    * read FAULT_REASON_NAMES_JSON, so this also guards against the two
@@ -632,7 +688,13 @@ static void test_monitor_cli_schema_matches_inband_schema(void) {
    * same reason) -- channel 0's copy picks up that one extra line ending
    * on top of the schema's own single trailing '\n'; channel 1's in-band
    * reply (tested above) has no such wrapper and is the pure bytes. */
-  char expected[1200];
+  /* Sized generously above MONITOR_SCHEMA_JSON_BUF_SIZE (Monitor.c) + "\r\n"
+   * -- bumped 1100->1536 alongside Monitor.c's own buffer growth
+   * (electricalAngleDeg/hallSector/commutationOffsetDeg, plus `main`'s own
+   * independent velocityIntegral growth) so this test's own local buffer
+   * doesn't silently truncate the schema out from under this comparison
+   * the same way Monitor.c's buffer almost did. */
+  char expected[1536];
   snprintf(expected, sizeof(expected), "%s\r\n", MonitorGetSchemaJson());
   capReset();
   run("monitor schema");
@@ -1310,6 +1372,122 @@ static void test_unknown_command(void) {
   TEST_ASSERT_NOT_NULL(strstr(cap, "error=unknown command"));
 }
 
+/* ---- output.topology/commutation.* (`two-phase-output` branch) ----------- */
+
+static void test_output_topology_defaults_analog_torque(void) {
+  run("get output.topology");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "output.topology=analog_torque"));
+}
+
+static void test_output_topology_rejects_two_phase_without_flag(void) {
+  /* This native env doesn't define ANALOG_SERVO_TWO_PHASE_DRIVE -- same as
+   * the real analog_servo (non-two-phase) board env -- so the stub mirrors
+   * main.c's real rejection. */
+  run("set output.topology two_phase_analog");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "error=invalid value"));
+  TEST_ASSERT_EQUAL_INT(OUTPUT_TOPOLOGY_ANALOG_TORQUE, sOutputTopology);
+}
+
+static void test_output_topology_invalid_value_rejected(void) {
+  run("set output.topology bogus");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "error=invalid value"));
+}
+
+static void test_commutation_pole_pairs_roundtrip_and_validation(void) {
+  run("set commutation.pole_pairs 6");
+  TEST_ASSERT_NULL(strstr(cap, "error="));
+  TEST_ASSERT_EQUAL_INT32(6, sConfig.commutationPolePairs);
+  capReset();
+  run("get commutation.pole_pairs");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "commutation.pole_pairs=6"));
+  capReset();
+  run("set commutation.pole_pairs 0");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "error=invalid value"));
+  TEST_ASSERT_EQUAL_INT32(6, sConfig.commutationPolePairs);
+}
+
+static void test_commutation_counts_per_elec_rev_roundtrip_and_validation(void) {
+  run("set commutation.counts_per_elec_rev 1200");
+  TEST_ASSERT_NULL(strstr(cap, "error="));
+  TEST_ASSERT_EQUAL_INT32(1200, sConfig.commutationCountsPerElecRev);
+  capReset();
+  run("get commutation.counts_per_elec_rev");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "commutation.counts_per_elec_rev=1200"));
+  capReset();
+  run("set commutation.counts_per_elec_rev -1");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "error=invalid value"));
+}
+
+static void test_commutation_learned_and_offset_are_read_only_telemetry(void) {
+  sConfig.commutationLearned = 1;
+  sConfig.commutationOffsetDeg = 42;
+  run("get commutation.learned");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "commutation.learned=1"));
+  capReset();
+  run("get commutation.offset_deg");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "commutation.offset_deg=42"));
+  capReset();
+  run("set commutation.learned 0");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "error=read-only"));
+}
+
+static void test_commutation_learn_rejected_without_two_phase_topology(void) {
+  run("commutation learn");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "error=requires output.topology=two_phase_analog"));
+  TEST_ASSERT_EQUAL_INT(0, sCommutationLearnCalls);
+}
+
+static void test_commutation_detect_poles_rejected_without_two_phase_topology(void) {
+  run("commutation detect_poles 1000");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "error=requires output.topology=two_phase_analog"));
+  TEST_ASSERT_EQUAL_INT(0, sCommutationDetectPolesCalls);
+}
+
+static void test_commutation_learn_dispatches_when_topology_two_phase(void) {
+  sOutputTopology = OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG;   /* bypass the CLI-level rejection above --
+    see this file's stub comment */
+  run("commutation learn");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "state=learning"));
+  TEST_ASSERT_EQUAL_INT(1, sCommutationLearnCalls);
+}
+
+static void test_commutation_detect_poles_dispatches_when_topology_two_phase(void) {
+  sOutputTopology = OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG;
+  run("commutation detect_poles 4800");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "state=detecting"));
+  TEST_ASSERT_EQUAL_INT(1, sCommutationDetectPolesCalls);
+  TEST_ASSERT_EQUAL_INT32(4800, sCommutationDetectPolesLastCpr);
+}
+
+static void test_commutation_detect_poles_missing_arg(void) {
+  sOutputTopology = OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG;
+  run("commutation detect_poles");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "error=usage:"));
+}
+
+static void test_commutation_detect_poles_invalid_cpr_rejected(void) {
+  sOutputTopology = OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG;
+  run("commutation detect_poles 0");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "error=invalid encoder_cpr"));
+  TEST_ASSERT_EQUAL_INT(0, sCommutationDetectPolesCalls);
+}
+
+static void test_commutation_missing_arg(void) {
+  run("commutation");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "error=usage:"));
+}
+
+static void test_commutation_unknown_subcommand(void) {
+  run("commutation bogus");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "error=usage:"));
+}
+
+static void test_position_zero_unavailable_with_two_phase_topology(void) {
+  sOutputTopology = OUTPUT_TOPOLOGY_TWO_PHASE_ANALOG;
+  run("position zero");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "error=position zero is unavailable with two-phase commutation"));
+}
+
 static void test_command_velocity_limit_roundtrip_and_validation(void) {
   run("set trajectory.velocity_limit 40");
   TEST_ASSERT_EQUAL_INT32(40, sConfig.commandVelocityClamp);
@@ -1507,6 +1685,21 @@ int main(void) {
   RUN_TEST(test_analog_diagnostics_are_read_only);
   RUN_TEST(test_enable_pin_asserted_reads_live_state);
   RUN_TEST(test_unknown_command);
+  RUN_TEST(test_output_topology_defaults_analog_torque);
+  RUN_TEST(test_output_topology_rejects_two_phase_without_flag);
+  RUN_TEST(test_output_topology_invalid_value_rejected);
+  RUN_TEST(test_commutation_pole_pairs_roundtrip_and_validation);
+  RUN_TEST(test_commutation_counts_per_elec_rev_roundtrip_and_validation);
+  RUN_TEST(test_commutation_learned_and_offset_are_read_only_telemetry);
+  RUN_TEST(test_commutation_learn_rejected_without_two_phase_topology);
+  RUN_TEST(test_commutation_detect_poles_rejected_without_two_phase_topology);
+  RUN_TEST(test_commutation_learn_dispatches_when_topology_two_phase);
+  RUN_TEST(test_commutation_detect_poles_dispatches_when_topology_two_phase);
+  RUN_TEST(test_commutation_detect_poles_missing_arg);
+  RUN_TEST(test_commutation_detect_poles_invalid_cpr_rejected);
+  RUN_TEST(test_commutation_missing_arg);
+  RUN_TEST(test_commutation_unknown_subcommand);
+  RUN_TEST(test_position_zero_unavailable_with_two_phase_topology);
   return UNITY_END();
 }
 

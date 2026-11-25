@@ -4,12 +4,38 @@
 #include <stdint.h>
 
 /* Channel-1 binary telemetry stream (the composite USB "monitor" port) --
- * see docs/monitor-protocol.md. Fixed 20-byte frame, one per 1kHz control
- * tick while enabled: sync byte + seq + position + velocity + torque +
- * mode/enabled/fault status + fault reason + pad. No checksum beyond the
- * frame's own CRC-8 (USB CDC is a reliable framed transport) -- the sync
- * byte + fixed size + CRC-8 are resync aids for a host that attaches
- * mid-stream.
+ * see docs/monitor-protocol.md. Fixed-size frame, one per 1kHz control tick
+ * while enabled: sync byte + seq + position + velocity + torque +
+ * commanded position/velocity + velocity-loop integral + electrical angle +
+ * raw Hall sector + commutation alignment offset + mode/enabled/fault
+ * status + fault reason + crc8 -- 44 bytes as of the commutationOffsetDeg
+ * field (ConfigStore's commutation.offset_deg, the LEARNED alignment
+ * offset `commutation learn` persists -- see docs/two-phase-drive.md; 0
+ * until a successful learn attempt, same value Protocol.c's
+ * `commutation.offset_deg` query already reports, now watchable converging
+ * over time in a capture instead of only point-queryable over the CLI).
+ * hallSector (added just before it) is the RAW output.topology=
+ * two_phase_analog Hall-sector reading (0..5, or -1 for an invalid/wiring-
+ * fault state -- see Hall.h), deliberately separate from
+ * electricalAngleDeg: the angle is a DERIVED value, so a backward Hall wire
+ * or an out-of-sequence sector transition on first bring-up can produce a
+ * plausible-looking-but-wrong angle with nothing in the frame to show the
+ * raw input was bad -- hallSector is that raw input. velocityIntegral
+ * (added right after commandedVelocity, before any of the two-phase
+ * fields) is Control.c's diagnostic velocity-loop PI integrator state,
+ * torque units * 65536, bounded by the configured torque clamp. No pad
+ * bytes exist to repack here -- this frame's original fixed 20-byte/
+ * pad-byte layout was already fully consumed by an earlier growth
+ * (commandedPosition/commandedVelocity, see tools/monitor_frame.py's own
+ * history comment) before velocityIntegral/electricalAngleDeg/hallSector/
+ * commutationOffsetDeg came along, so each of these has been a straight
+ * append-only growth, not a repack. MonitorGetSchemaJson() (below) is
+ * built from sizeof()/offsetof(), not hand-typed, so growing the struct
+ * can't silently drift the schema out of sync with it the way editing a
+ * hand-typed byte count or field table
+ * would. No checksum beyond the frame's own CRC-8 (USB CDC is a reliable
+ * framed transport) -- the sync byte + fixed size + CRC-8 are resync aids
+ * for a host that attaches mid-stream.
  *
  * Toggled via Protocol.c's `monitor start`/`monitor stop` CLI command on
  * channel 0, OR via a single in-band command byte on channel 1 itself --

@@ -23,12 +23,23 @@
 
 /* Record layout version. Starts at 1 (never 0 or 0xFF -- those collide with
  * zeroed/erased flash). No migration: an old-version record is rejected and
- * defaults apply -- see AGENTS.md. Bump this on any field-layout change. */
-#define CONFIG_FLASH_VERSION   2U
+ * defaults apply -- see AGENTS.md. Bump this on any field-layout change.
+ * Two INDEPENDENT bumps to 2 happened in parallel and collided here: `main`
+ * bumped 1->2 for zeroTrimCounts->zeroTrim's unit change (raw DAC/PWM codes
+ * -> torque units), this branch separately bumped 1->2 for the new
+ * outputTopology/commutation* fields below -- same number, different
+ * layouts. Rebasing onto `main` combines both sets of fields into one
+ * struct that matches NEITHER parent's v2 record, so this is now 3, not 2
+ * -- any v1 OR either parent's v2 record is simply rejected here, same
+ * "no migration" convention. */
+#define CONFIG_FLASH_VERSION   3U
 
 /* Fixed, padded record size -- a new field consumes reserved padding in
- * place, so this never needs to grow for a small addition. */
-#define CONFIG_FLASH_RECORD_SIZE 104U
+ * place, so this never needs to grow for a small addition. Grew from 104 to
+ * 116 on this branch (outputTopology/commutationLearned/3 commutation
+ * int32s = 14B needed, only 12B of _reserved was left -- see the struct's
+ * trailing comment). */
+#define CONFIG_FLASH_RECORD_SIZE 116U
 
 typedef struct {
   uint32_t magic;
@@ -55,7 +66,13 @@ typedef struct {
   int32_t  velocityJerk;
   int32_t  positionMoveFeedforwardQ8;
   int32_t  velocityErrorDeadbandCounts;
-  uint8_t  _reserved[12];  /* pads to CONFIG_FLASH_RECORD_SIZE -- zero-filled by
+  uint8_t  outputTopology;               /* see Output.h's OutputTopology */
+  uint8_t  commutationLearned;
+  uint8_t  _pad2[2];                     /* keeps the next field 4-byte aligned */
+  int32_t  commutationPolePairs;
+  int32_t  commutationCountsPerElecRev;
+  int32_t  commutationOffsetDeg;
+  uint8_t  _reserved[8];  /* pads to CONFIG_FLASH_RECORD_SIZE -- zero-filled by
                                ConfigStoreSave()'s memset before any field is set, so
                                these read back as 0 until a future field claims some of
                                them (shrink this array by exactly as many bytes as the
@@ -114,6 +131,11 @@ void ConfigDataSetDefaults(ConfigData *cfg) {
   cfg->sustainedCurrentWindowTicks = CONFIG_DEFAULT_SUSTAINED_CURRENT_WINDOW_TICKS;
   cfg->rampAccelCountsPerTickPerSec = CONFIG_DEFAULT_RAMP_ACCEL;
   cfg->velocityErrorDeadbandCounts = CONFIG_DEFAULT_VELOCITY_ERROR_DEADBAND_COUNTS;
+  cfg->outputTopology = 0;            /* OUTPUT_TOPOLOGY_ANALOG_TORQUE */
+  cfg->commutationLearned = 0;
+  cfg->commutationPolePairs = CONFIG_DEFAULT_COMMUTATION_POLE_PAIRS;
+  cfg->commutationCountsPerElecRev = CONFIG_DEFAULT_COMMUTATION_COUNTS_PER_ELEC_REV;
+  cfg->commutationOffsetDeg = 0;
 }
 
 int ConfigStoreSave(const ConfigData *cfg) {
@@ -143,6 +165,11 @@ int ConfigStoreSave(const ConfigData *cfg) {
   rec.sustainedCurrentWindowTicks = cfg->sustainedCurrentWindowTicks;
   rec.rampAccelCountsPerTickPerSec = cfg->rampAccelCountsPerTickPerSec;
   rec.velocityErrorDeadbandCounts = cfg->velocityErrorDeadbandCounts;
+  rec.outputTopology = cfg->outputTopology;
+  rec.commutationLearned = cfg->commutationLearned;
+  rec.commutationPolePairs = cfg->commutationPolePairs;
+  rec.commutationCountsPerElecRev = cfg->commutationCountsPerElecRev;
+  rec.commutationOffsetDeg = cfg->commutationOffsetDeg;
   rec.version = CONFIG_FLASH_VERSION;
   rec.magic = CONFIG_FLASH_MAGIC;
   rec.crc = RecordCrc(&rec);
@@ -203,6 +230,11 @@ int ConfigStoreLoad(ConfigData *out) {
   out->sustainedCurrentWindowTicks = rec->sustainedCurrentWindowTicks;
   out->rampAccelCountsPerTickPerSec = rec->rampAccelCountsPerTickPerSec;
   out->velocityErrorDeadbandCounts = rec->velocityErrorDeadbandCounts;
+  out->outputTopology = rec->outputTopology;
+  out->commutationLearned = rec->commutationLearned;
+  out->commutationPolePairs = rec->commutationPolePairs;
+  out->commutationCountsPerElecRev = rec->commutationCountsPerElecRev;
+  out->commutationOffsetDeg = rec->commutationOffsetDeg;
   return 0;
 }
 
