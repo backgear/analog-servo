@@ -831,13 +831,6 @@ static void cmdSignal(int argc, char **argv) {
   respError("unknown test subcommand");
 }
 
-#ifdef ANALOG_SERVO_HAS_AUTOTUNE
-#define RLS_DEFAULT_LAMBDA_Q8  256   /* 1.0, no forgetting -- the stable default; see RLS.c's
-                                         file comment on forgetting-factor RLS "bursting" under
-                                         near-noiseless tracking before loosening this */
-#define RLS_DEFAULT_GLIDE_MS  2000U  /* ~2s -- "resolves to delightful" should be felt, not
-                                         instant; bench-TBD, not finalized */
-
 static void cmdExcite(int argc, char **argv) {
   if (argc == 2 && !strcmp(argv[1], "stop")) {
     ExcitationStop(3); respKV("state", "stopped"); return;
@@ -871,6 +864,13 @@ static void cmdExcite(int argc, char **argv) {
   }
   respKV("state", "running");
 }
+
+#ifdef ANALOG_SERVO_HAS_AUTOTUNE
+#define RLS_DEFAULT_LAMBDA_Q8  256   /* 1.0, no forgetting -- the stable default; see RLS.c's
+                                         file comment on forgetting-factor RLS "bursting" under
+                                         near-noiseless tracking before loosening this */
+#define RLS_DEFAULT_GLIDE_MS  2000U  /* ~2s -- "resolves to delightful" should be felt, not
+                                         instant; bench-TBD, not finalized */
 
 static void cmdAutotuneStart(int argc, char **argv) {
   static const char *usage =
