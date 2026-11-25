@@ -9,6 +9,7 @@ import types
 import unittest
 from unittest.mock import patch
 
+from monitor_frame import FIELD_OFFSETS
 from test_monitor_frame import frame
 
 ROOT = Path(__file__).resolve().parent
@@ -40,7 +41,14 @@ class SigrokMonitorTests(unittest.TestCase):
         decoder.putf = lambda *args: annotations.append(args)
         window = [(i, i + 1, value) for i, value in enumerate(frame())]
         self.assertTrue(decoder.try_emit_frame(window))
-        self.assertIn((25, 29, pd.ANN_INTEGRAL, 'velocity_integral_q16=-8060928'), annotations)
-        self.assertTrue(any(a[:3] == (29, 30, pd.ANN_STATUS) for a in annotations))
+        # Offsets are derived from FIELD_OFFSETS, not hardcoded, so this
+        # test can't go stale the way it did the last time the frame grew
+        # (see monitor_frame.py's and monitor_frames.py's top comments).
+        integral_start = FIELD_OFFSETS['velocity_integral']
+        integral_end = FIELD_OFFSETS['electrical_angle_deg']
+        self.assertIn((integral_start, integral_end, pd.ANN_INTEGRAL, 'velocity_integral_q16=-8060928'),
+                      annotations)
+        status_off = FIELD_OFFSETS['status']
+        self.assertTrue(any(a[:3] == (status_off, status_off + 1, pd.ANN_STATUS) for a in annotations))
         self.assertFalse(decoder.try_emit_frame(
             [(i, i + 1, value) for i, value in enumerate(frame(status=3))]))

@@ -6,13 +6,56 @@ an offline converter) shouldn't have to pull that in too.
 """
 import struct
 
-FRAME_LEN = 44   # was 40 before commutationOffsetDeg (int32) was added, 36
-                 # before that (hallSector), 32 before that
-                 # (electricalAngleDeg), 28 before that (velocityIntegral,
-                 # an INDEPENDENT growth on `main`), 20 before that
-                 # (commandedPosition/commandedVelocity, 2x int32)
 SYNC_BYTE = 0xAA
-STRUCT_FMT = "<BIiiiiiiiiiBBB"
+
+# Declarative mirror of Monitor.c's AppendSchema() calls (what
+# MonitorGetSchemaJson() serves as `monitor schema`): field name and wire
+# type, in wire order. STRUCT_FMT/FRAME_LEN/FIELD_OFFSETS below are all
+# DERIVED from this list by struct_format()/field_offsets(), not
+# hand-typed -- a field added or removed here is the only change needed on
+# the Python side. This is exactly the discipline Monitor.h's own doc
+# comment on MonitorGetSchemaJson() asks host tools to follow (derive from
+# the schema, don't cache a hand-copied struct) -- see
+# tools/sigrok/monitor_frames.py and tools/test_sigrok_monitor.py, which
+# both import FIELD_OFFSETS instead of hardcoding byte positions, for the
+# bug that hand-copying caused when this frame last grew (commutation_offset_deg
+# was the 4th field added since FRAME_LEN was 20: commandedPosition/
+# commandedVelocity, then velocityIntegral on `main` independently, then
+# electricalAngleDeg, then hallSector, then this one).
+FIELDS = (
+    ("sync", "u8"), ("seq", "u32"), ("position", "i32"), ("velocity", "i32"),
+    ("torque_command", "i32"), ("commanded_position", "i32"), ("commanded_velocity", "i32"),
+    ("velocity_integral", "i32"), ("electrical_angle_deg", "i32"), ("hall_sector", "i32"),
+    ("commutation_offset_deg", "i32"), ("status", "u8"), ("fault_reason", "u8"), ("crc8", "u8"),
+)
+
+_WIRE_TYPE_CHAR = {"u8": "B", "u32": "I", "i32": "i"}
+
+
+def struct_format(fields):
+    """(name, type) pairs in wire order -> a little-endian struct.unpack
+    format string. Takes the same shape MonitorGetSchemaJson()'s "fields"
+    list uses (name/type; offset is derived here instead of read, so a
+    live-fetched schema works the same way as the FIELDS literal above).
+    Assumes no padding between fields, true of any __attribute__((packed))
+    struct like MonitorFrame."""
+    return "<" + "".join(_WIRE_TYPE_CHAR[kind] for _, kind in fields)
+
+
+def field_offsets(fields):
+    """(name, type) pairs -> {name: byte offset}, walked in the same order
+    struct_format() encodes -- so this always agrees with STRUCT_FMT's
+    actual layout, including after FIELDS gains or loses a field."""
+    offsets, pos = {}, 0
+    for name, kind in fields:
+        offsets[name] = pos
+        pos += struct.calcsize("<" + _WIRE_TYPE_CHAR[kind])
+    return offsets
+
+
+STRUCT_FMT = struct_format(FIELDS)
+FRAME_LEN = struct.calcsize(STRUCT_FMT)
+FIELD_OFFSETS = field_offsets(FIELDS)
 
 MODE_NAMES = ("stepdir", "host", "analog")
 FAULT_REASON_NAMES = ("none", "polarity", "zero_encoder", "endstop", "following_error", "sustained_current")
