@@ -431,8 +431,10 @@ static void getPolarityLastMovedCounts(char *b, size_t n) { TinyFormat(b, n, "%l
 
 static void getEncoderZSeen(char *b, size_t n) { TinyFormat(b, n, "%d", EncoderZWasSeenSinceEnable()); }
 
+#ifdef ANALOG_SERVO_HAS_EXCITATION
 static void getExcitationActive(char *b, size_t n) { TinyFormat(b, n, "%d", ExcitationActive()); }
 static void getExcitationResult(char *b, size_t n) { TinyFormat(b, n, "%d", ExcitationResult()); }
+#endif /* ANALOG_SERVO_HAS_EXCITATION */
 static void getSignalActive(char *b, size_t n) { TinyFormat(b, n, "%d", AppGetSignalActive()); }
 static void getSignalType(char *b, size_t n)   { TinyFormat(b, n, "%s", SignalTypeName(AppGetSignalType())); }
 static void getSignalTarget(char *b, size_t n) { TinyFormat(b, n, "%s", SignalTargetName(AppGetSignalTarget())); }
@@ -577,8 +579,10 @@ static const var_entry_t kVars[] = {
   { "encoder.index_seen",     getEncoderZSeen,      NULL, BOOL_META },
   { "fault.latched",      getFaultLatched,      NULL, BOOL_META },
   { "fault.reason",       getFaultReason,       NULL, ENUM_META(FAULT_REASON_NAMES_JSON) },
+#ifdef ANALOG_SERVO_HAS_EXCITATION
   { "excite.active", getExcitationActive, NULL, BOOL_META },
   { "excite.result", getExcitationResult, NULL, UINT_META("reason_code") },
+#endif /* ANALOG_SERVO_HAS_EXCITATION */
   { "test.active",      getSignalActive,      NULL, BOOL_META },
   { "test.type",        getSignalType,        NULL, ENUM_META("\"none\",\"impulse\",\"square\"") },
   { "test.target",      getSignalTarget,      NULL, ENUM_META("\"torque\",\"position\"") },
@@ -831,6 +835,7 @@ static void cmdSignal(int argc, char **argv) {
   respError("unknown test subcommand");
 }
 
+#ifdef ANALOG_SERVO_HAS_EXCITATION
 static void cmdExcite(int argc, char **argv) {
   if (argc == 2 && !strcmp(argv[1], "stop")) {
     ExcitationStop(3); respKV("state", "stopped"); return;
@@ -864,6 +869,7 @@ static void cmdExcite(int argc, char **argv) {
   }
   respKV("state", "running");
 }
+#endif /* ANALOG_SERVO_HAS_EXCITATION */
 
 #ifdef ANALOG_SERVO_HAS_AUTOTUNE
 #define RLS_DEFAULT_LAMBDA_Q8  256   /* 1.0, no forgetting -- the stable default; see RLS.c's
@@ -1028,7 +1034,9 @@ static const cmd_t kCommands[] = {
   { "autotune", cmdAutotune,
     "<start relay <amp> [max_ticks] | start rls [lambda_q8] [glide_ms] | stop | apply>" },
 #endif
+#ifdef ANALOG_SERVO_HAS_EXCITATION
   { "excite", cmdExcite, "<start|moving|torque <amp> <hold_ticks> <duration_ticks> <travel_counts> <speed_counts_per_tick> | stop>" },
+#endif /* ANALOG_SERVO_HAS_EXCITATION */
   { "config",   cmdConfig,   "<save|load|defaults> -- flash config persistence" },
   { NULL, NULL, NULL },
 };
