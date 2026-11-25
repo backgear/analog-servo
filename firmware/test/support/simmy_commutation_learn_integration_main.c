@@ -251,6 +251,7 @@ void AnalogVelocitySetConfig(int32_t scaleQ8, int32_t hysteresisCounts) {
   (void)scaleQ8; (void)hysteresisCounts;
 }
 void IndicatorSetState(IndicatorState state) { (void)state; }
+void RampInit(RampState *r) { (void)r; }
 void RampSetTarget(RampState *r, int32_t targetVelocityCountsPerTick) {
   (void)r; (void)targetVelocityCountsPerTick;
 }

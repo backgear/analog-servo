@@ -106,6 +106,15 @@ class SimmyCommutationLearnIntegrationTest(unittest.TestCase):
             ROOT / 'firmware/src/Autotune.c',
             ROOT / 'firmware/src/Signal.c',
             ROOT / 'firmware/src/Polarity.c',
+            # Excitation.c: main.c's rawExcitation branch in AppControlTick()
+            # calls it unconditionally (no ANALOG_SERVO_HAS_* gate, unlike
+            # RLS/GainGlide below). That same branch also calls RampInit() --
+            # NOT linked here, same as RampSetTarget/RampSetAcceleration/
+            # RampSetJerk/RampSmoothTick: this driver stubs all five itself
+            # (see simmy_commutation_learn_integration_main.c) rather than
+            # linking the real Ramp.c, so RampInit needed a stub added
+            # there, not a new link dependency here.
+            ROOT / 'firmware/src/Excitation.c',
             # RLS.c/GainGlide.c deliberately NOT linked here (unlike
             # Autotune.c above): this driver doesn't define
             # ANALOG_SERVO_HAS_AUTOTUNE (see _CFLAGS above) and never calls
