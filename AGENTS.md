@@ -39,7 +39,9 @@ hardware paths and control experiments live on separate branches — see
   chart of it -- also built on `monitor_frame.py`), `bench_report.py`
   (turns a recorder directory into a `report.md` + plot — run this
   instead of hand-writing bench-results write-ups), `serial_console.py`
-  (generic CLI), `sigrok/export_run.py` + `sigrok/capture_usb_concurrency.py`
+  (generic CLI), `build_id.py` (says which local `firmware.elf`, if any,
+  matches the board's `get build.id` -- not yet run against real
+  hardware), `sigrok/export_run.py` + `sigrok/capture_usb_concurrency.py`
   + `sigrok-decoder-monitor/` (binary telemetry capture/decode/export),
   `stepdir_pulse_demo.py` (a SIMULATED, not bench-captured, Mode A
   step/dir tracking demo -- builds and runs

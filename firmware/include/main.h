@@ -269,4 +269,9 @@ uint32_t AppGetLastTickCycles(void);   /* whole-ISR DWT cycles, last tick */
 uint32_t AppGetMaxTickCycles(void);    /* peak since boot */
 int32_t  AppGetLastTickLoadPct(void);  /* integer percent of the 1kHz period */
 
+/* GNU build-ID of the running image, kept in flash by ld/STM32*_FLASH.ld: points
+ * *id at its bytes and returns their count, or returns 0 when the image
+ * carries no note. Compare against `readelf -n firmware.elf`. */
+uint32_t AppGetBuildId(const uint8_t **id);
+
 #endif /* MAIN_H */

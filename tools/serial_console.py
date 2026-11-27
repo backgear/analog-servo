@@ -437,6 +437,10 @@ class CommandSocket:
         self.path.unlink(missing_ok=True)
 
 
+def default_socket_path(port):
+    return f'/tmp/serial-console-{os.getuid()}-{Path(port).name}.sock'
+
+
 def socket_request(path, command):
     with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as connection:
         connection.settimeout(15);connection.connect(str(path))
@@ -578,7 +582,7 @@ def main(argv=None):
         for port in list_ports.comports():print(f'{port.device}\t{port.description}\t{port.hwid}')
         return 0
     if not args.port:parser.error('Choose a CLI port (see --list-ports)')
-    path = args.socket_path or f'/tmp/serial-console-{os.getuid()}-{Path(args.port).name}.sock'
+    path = args.socket_path or default_socket_path(args.port)
     owner = SerialOwner(serial.Serial(args.port,args.baud,timeout=.03,write_timeout=1,exclusive=True),
                         args.poll_command,args.poll,args.timeout,args.checksum)
     server = None

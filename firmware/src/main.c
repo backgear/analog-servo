@@ -10,6 +10,7 @@
  * natural owner.
  */
 #include "main.h"
+#include "BuildId.h"
 #include "gpio.h"
 #include "tim.h"
 #include "Encoder.h"
@@ -1031,6 +1032,13 @@ int32_t AppGetLastHallSector(void) { return sLastHallSectorForTelemetry; }
 
 uint32_t AppGetLastTickCycles(void) { return sLastTickCycles; }
 uint32_t AppGetMaxTickCycles(void) { return sMaxTickCycles; }
+
+/* Bounds of the .note.gnu.build-id output section, from ld/STM32*_FLASH.ld. */
+extern const uint8_t __build_id_start[], __build_id_end[];
+
+uint32_t AppGetBuildId(const uint8_t **id) {
+  return BuildIdFromNote(__build_id_start, (uint32_t)(__build_id_end - __build_id_start), id);
+}
 
 #ifndef SYSCLK_HZ
 #error "SYSCLK_HZ must be defined by the env's build_flags (see platformio.ini)"
