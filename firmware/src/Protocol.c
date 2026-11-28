@@ -17,6 +17,7 @@
 #include "Encoder.h"
 #include "Fault.h"
 #include "Monitor.h"
+#include "Excitation.h"
 #include "usart.h"
 #include "usbd_cdc_composite_if.h"
 
@@ -430,6 +431,10 @@ static void getPolarityLastMovedCounts(char *b, size_t n) { TinyFormat(b, n, "%l
 
 static void getEncoderZSeen(char *b, size_t n) { TinyFormat(b, n, "%d", EncoderZWasSeenSinceEnable()); }
 
+#ifdef ANALOG_SERVO_HAS_EXCITATION
+static void getExcitationActive(char *b, size_t n) { TinyFormat(b, n, "%d", ExcitationActive()); }
+static void getExcitationResult(char *b, size_t n) { TinyFormat(b, n, "%d", ExcitationResult()); }
+#endif /* ANALOG_SERVO_HAS_EXCITATION */
 static void getSignalActive(char *b, size_t n) { TinyFormat(b, n, "%d", AppGetSignalActive()); }
 static void getSignalType(char *b, size_t n)   { TinyFormat(b, n, "%s", SignalTypeName(AppGetSignalType())); }
 static void getSignalTarget(char *b, size_t n) { TinyFormat(b, n, "%s", SignalTargetName(AppGetSignalTarget())); }
@@ -574,6 +579,10 @@ static const var_entry_t kVars[] = {
   { "encoder.index_seen",     getEncoderZSeen,      NULL, BOOL_META },
   { "fault.latched",      getFaultLatched,      NULL, BOOL_META },
   { "fault.reason",       getFaultReason,       NULL, ENUM_META(FAULT_REASON_NAMES_JSON) },
+#ifdef ANALOG_SERVO_HAS_EXCITATION
+  { "excite.active", getExcitationActive, NULL, BOOL_META },
+  { "excite.result", getExcitationResult, NULL, UINT_META("reason_code") },
+#endif /* ANALOG_SERVO_HAS_EXCITATION */
   { "test.active",      getSignalActive,      NULL, BOOL_META },
   { "test.type",        getSignalType,        NULL, ENUM_META("\"none\",\"impulse\",\"square\"") },
   { "test.target",      getSignalTarget,      NULL, ENUM_META("\"torque\",\"position\"") },
@@ -826,6 +835,42 @@ static void cmdSignal(int argc, char **argv) {
   respError("unknown test subcommand");
 }
 
+#ifdef ANALOG_SERVO_HAS_EXCITATION
+static void cmdExcite(int argc, char **argv) {
+  if (argc == 2 && !strcmp(argv[1], "stop")) {
+    ExcitationStop(3); respKV("state", "stopped"); return;
+  }
+  if (argc != 7 || (strcmp(argv[1], "start") && strcmp(argv[1], "moving") && strcmp(argv[1], "torque"))) {
+    respError("usage: excite <start|moving|torque> <amp> <hold_ticks> <duration_ticks> <travel_counts> <speed_counts_per_tick> | stop"); return;
+  }
+  int moving = !strcmp(argv[1], "moving");
+  int32_t commanded = AppGetCommandedVelocity();
+  int64_t velocityError = (int64_t)AppGetLastVelocityActual() - commanded;
+  int32_t amp, travel, speed;
+  uint32_t hold, duration;
+  if (ParseI32(argv[2], &amp) || ParseU32(argv[3], &hold) ||
+      ParseU32(argv[4], &duration) || ParseI32(argv[5], &travel) || ParseI32(argv[6], &speed)) {
+    respError("invalid excitation parameters"); return;
+  }
+  if (!AppGetEnabled() || !AppGetHwEnableAsserted() || FaultIsLatched() ||
+      AppGetServoMode() != SERVO_MODE_VELOCITY ||
+      (moving ? commanded == 0 || velocityError < -2 || velocityError > 2 :
+                commanded != 0 || AppGetLastVelocityActual() != 0) ||
+      AppPolarityLearnBusy() || AppAutotuneBusy() || AppGetSignalActive() ||
+      (int64_t)AppGetConfig()->torqueClampMax < amp ||
+      (int64_t)AppGetConfig()->torqueClampMin > -(int64_t)amp) {
+    respError("excitation requires steady enabled host operation, no test/fault, and sufficient clamp headroom"); return;
+  }
+  int result = !strcmp(argv[1], "torque")
+      ? ExcitationStartTorque(amp, hold, duration, travel, speed, EncoderGetPositionCounts())
+      : ExcitationStartMoving(amp, hold, duration, travel, speed, EncoderGetPositionCounts(), commanded);
+  if (result) {
+    respError("invalid bounds, duration must be a multiple of 2*hold, or already running"); return;
+  }
+  respKV("state", "running");
+}
+#endif /* ANALOG_SERVO_HAS_EXCITATION */
+
 #ifdef ANALOG_SERVO_HAS_AUTOTUNE
 #define RLS_DEFAULT_LAMBDA_Q8  256   /* 1.0, no forgetting -- the stable default; see RLS.c's
                                          file comment on forgetting-factor RLS "bursting" under
@@ -989,6 +1034,9 @@ static const cmd_t kCommands[] = {
   { "autotune", cmdAutotune,
     "<start relay <amp> [max_ticks] | start rls [lambda_q8] [glide_ms] | stop | apply>" },
 #endif
+#ifdef ANALOG_SERVO_HAS_EXCITATION
+  { "excite", cmdExcite, "<start|moving|torque <amp> <hold_ticks> <duration_ticks> <travel_counts> <speed_counts_per_tick> | stop>" },
+#endif /* ANALOG_SERVO_HAS_EXCITATION */
   { "config",   cmdConfig,   "<save|load|defaults> -- flash config persistence" },
   { NULL, NULL, NULL },
 };
@@ -999,6 +1047,11 @@ static void Dispatch(char *line) {
   char *p = strtok(line, " \t");
   while (p && argc < 8) { argv[argc++] = p; p = strtok(NULL, " \t"); }
   if (argc == 0) return;   /* blank line: no-op */
+  if (ExcitationActive() && strcmp(argv[0], "excite") && strcmp(argv[0], "disable") &&
+      strcmp(argv[0], "get") && strcmp(argv[0], "settings") && strcmp(argv[0], "status") &&
+      strcmp(argv[0], "sample") && strcmp(argv[0], "monitor")) {
+    respError("stop excitation before changing controller state"); respEnd(); return;
+  }
 
   for (const cmd_t *c = kCommands; c->name; c++) {
     if (!strcmp(argv[0], c->name)) { c->fn(argc, argv); respEnd(); return; }

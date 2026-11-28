@@ -59,6 +59,13 @@ def _simmy_has_pmsm_foc():
 _CFLAGS = ['-std=gnu11', '-O0', '-g', '-Wall', '-Wextra',
            '-ffunction-sections', '-fdata-sections',
            '-D', 'SYSCLK_HZ=32000000', '-D', 'ANALOG_SERVO_TWO_PHASE_DRIVE',
+           # Excitation.c is linked below as a real .c file with real
+           # (non-static) definitions; Excitation.h only declares matching
+           # real prototypes when this is defined, static inline stubs of
+           # the same names otherwise -- so this has to be defined whenever
+           # Excitation.c is actually linked, same reasoning as
+           # ANALOG_SERVO_TWO_PHASE_DRIVE for Hall.c/Commutation.c.
+           '-D', 'ANALOG_SERVO_HAS_EXCITATION',
            # main.h now errors without an explicit MCU macro (see
            # firmware/include/main.h) -- STM32L152xE, not
            # ANALOG_SERVO_NATIVE_TEST, since Output.c's real two-phase DAC
@@ -106,6 +113,24 @@ class SimmyCommutationLearnIntegrationTest(unittest.TestCase):
             ROOT / 'firmware/src/Autotune.c',
             ROOT / 'firmware/src/Signal.c',
             ROOT / 'firmware/src/Polarity.c',
+            # Excitation.c: main.c's rawExcitation branch in AppControlTick()
+            # calls it unconditionally (no ANALOG_SERVO_HAS_* gate, unlike
+            # RLS/GainGlide below). That same branch also calls RampInit() --
+            # NOT linked here, same as RampSetTarget/RampSetAcceleration/
+            # RampSetJerk/RampSmoothTick: this driver stubs all five itself
+            # (see simmy_commutation_learn_integration_main.c) rather than
+            # linking the real Ramp.c, so RampInit needed a stub added
+            # there, not a new link dependency here.
+            # Linked for real (not stubbed out via main.c's #ifdef) because
+            # ANALOG_SERVO_HAS_EXCITATION is defined above -- main.c's
+            # rawExcitation branch in AppControlTick() calls it
+            # unconditionally once that's true. That same branch also calls
+            # RampInit() -- NOT linked here, same as RampSetTarget/
+            # RampSetAcceleration/RampSetJerk/RampSmoothTick: this driver
+            # stubs all five itself (see simmy_commutation_learn_integration_main.c)
+            # rather than linking the real Ramp.c, so RampInit needed a stub
+            # added there, not a new link dependency here.
+            ROOT / 'firmware/src/Excitation.c',
             # RLS.c/GainGlide.c deliberately NOT linked here (unlike
             # Autotune.c above): this driver doesn't define
             # ANALOG_SERVO_HAS_AUTOTUNE (see _CFLAGS above) and never calls

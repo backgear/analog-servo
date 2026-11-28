@@ -349,6 +349,98 @@ static void test_velocity_filter_is_causal_and_resets(void) {
   TEST_ASSERT_EQUAL_INT32(0, ControlVelocityTick(0,0,1000));
 }
 
+static void test_p_filter_does_not_discard_or_repeatedly_integrate_counts(void) {
+  ControlGains g=*ControlGetGains();
+  g.velGainKpQ8=0; g.velGainKiQ8=256; g.velocityFilterShift=4;
+  g.velocityErrorDeadbandCounts=1;
+  ControlInit(&g);
+  ControlVelocityTick(0,0,1000);
+  TEST_ASSERT_EQUAL_INT32(-1,ControlVelocityTick(0,1,1000));
+  for (int i=0;i<1000;i++)
+    TEST_ASSERT_EQUAL_INT32(-1,ControlVelocityTick(0,0,1000));
+  TEST_ASSERT_EQUAL_INT32(0,ControlVelocityTick(0,-1,1000));
+  for (int i=0;i<1000;i++)
+    TEST_ASSERT_EQUAL_INT32(0,ControlVelocityTick(0,0,1000));
+}
+
+static void test_p_filter_preserves_reference_and_decays_without_bias(void) {
+  ControlGains g=*ControlGetGains();
+  g.velGainKpQ8=65536; g.velGainKiQ8=0; g.velocityErrorDeadbandCounts=0;
+  for (int shift=1;shift<=4;shift++) {
+    g.velocityFilterShift=shift;
+    for (int sign=-1;sign<=1;sign+=2) {
+      ControlInit(&g);
+      ControlVelocityTick(0,0,1000);
+      /* Only measured feedback is filtered: a changed reference is immediate. */
+      TEST_ASSERT_EQUAL_INT32(sign*256,ControlVelocityTick(sign,0,1000));
+      ControlVelocityTick(0,sign,1000);
+      int32_t output=0;
+      for (int i=0;i<256;i++) output=ControlVelocityTick(0,0,1000);
+      TEST_ASSERT_EQUAL_INT32(0,output);
+    }
+  }
+}
+
+static void test_filtered_p_antiwindup_uses_raw_integral_error(void) {
+  ControlGains g=*ControlGetGains();
+  g.velGainKpQ8=256; g.velGainKiQ8=256;
+  g.velocityFilterShift=1; g.velocityErrorDeadbandCounts=0;
+  g.torqueClampMin=-10;g.torqueClampMax=10;
+  ControlInit(&g);
+  ControlVelocityTick(0,0,1000);
+  TEST_ASSERT_EQUAL_INT32(-10,ControlVelocityTick(0,20,1000));
+  /* Filtered measurement is +5, but raw -10 must integrate +10. */
+  TEST_ASSERT_EQUAL_INT32(5,ControlVelocityTick(0,-10,1000));
+  TEST_ASSERT_EQUAL_INT32(10,ControlVelocityTick(0,0,1000));
+}
+
+static void test_two_sample_p_average_has_finite_support(void) {
+  ControlGains g=*ControlGetGains();
+  g.velGainKpQ8=65536;g.velGainKiQ8=0;g.velocityFilterShift=1;
+  g.velocityErrorDeadbandCounts=0;
+  ControlInit(&g);ControlVelocityTick(0,0,1000);
+  TEST_ASSERT_EQUAL_INT32(-128,ControlVelocityTick(0,1,1000));
+  TEST_ASSERT_EQUAL_INT32(-128,ControlVelocityTick(0,0,1000));
+  TEST_ASSERT_EQUAL_INT32(0,ControlVelocityTick(0,0,1000));
+  for (int i=0;i<100;i++) {
+    TEST_ASSERT_EQUAL_INT32(-128,ControlVelocityTick(0,1,1000));
+    TEST_ASSERT_EQUAL_INT32(0,ControlVelocityTick(0,-1,1000));
+    /* Previous sample is now -1: next +1 averages to zero. */
+    for (int j=0;j<10;j++) {
+      TEST_ASSERT_EQUAL_INT32(0,ControlVelocityTick(0,1,1000));
+      TEST_ASSERT_EQUAL_INT32(0,ControlVelocityTick(0,-1,1000));
+    }
+    ControlReset();ControlVelocityTick(0,0,1000);
+  }
+}
+
+static void test_p_average_all_windows_preserve_fractional_samples(void) {
+  ControlGains g=*ControlGetGains();
+  g.velGainKpQ8=65536;g.velGainKiQ8=0;g.velocityErrorDeadbandCounts=0;
+  for (int shift=0;shift<=4;shift++) {
+    g.velocityFilterShift=shift;
+    int window=1<<shift;
+    for (int sign=-1;sign<=1;sign+=2) {
+      ControlInit(&g);ControlVelocityTick(0,0,1000);
+      TEST_ASSERT_EQUAL_INT32(-sign*256/window,ControlVelocityTick(0,sign,1000));
+      for (int i=1;i<window;i++)
+        TEST_ASSERT_EQUAL_INT32(-sign*256/window,ControlVelocityTick(0,0,1000));
+      TEST_ASSERT_EQUAL_INT32(0,ControlVelocityTick(0,0,1000));
+    }
+  }
+}
+
+static void test_p_average_hot_changes_use_recent_history(void) {
+  ControlGains g=*ControlGetGains();
+  g.velGainKpQ8=256;g.velGainKiQ8=0;g.velocityFilterShift=0;
+  g.velocityErrorDeadbandCounts=0;
+  ControlInit(&g);ControlVelocityTick(0,0,1000);
+  ControlVelocityTick(0,10,1000);
+  g.velocityFilterShift=1;ControlSetGains(&g);
+  TEST_ASSERT_EQUAL_INT32(-5,ControlVelocityTick(0,0,1000));
+  TEST_ASSERT_EQUAL_INT32(0,ControlVelocityTick(0,0,1000));
+}
+
 static void test_acceleration_feedforward_uses_current_ramp_change(void) {
   ControlGains g=*ControlGetGains(); g.velGainKiQ8=0; g.accelerationFeedforwardQ8=2560;
   ControlInit(&g);
@@ -373,11 +465,9 @@ static void test_command_specific_speed_limit_cannot_exceed_feedback_limit(void)
   TEST_ASSERT_EQUAL_INT32(60,ControlGetLastVelocityTarget());
 }
 
-/* A large velGainKpQ8 (tuned aggressively for fast settle) turns +-1 count/tick of
- * UNAVOIDABLE encoder quantization noise at rest into a disproportionate torque kick with
- * no net motion -- real wasted power/heat, not a tuning mistake. The deadband exists to
- * suppress exactly that, without masking a real error. */
-static void test_velocity_error_deadband_suppresses_quantization_noise_only(void) {
+/* The soft band reduces P without discarding a persistent error or making
+ * a torque discontinuity at the edge of the configured width. */
+static void test_velocity_error_noise_band_softens_proportional_only(void) {
   ControlGains g = {
     .posGainQ8 = 0, .velGainKpQ8 = 1024, .velGainKiQ8 = 0,
     .velocityClamp = 10000,
@@ -385,13 +475,9 @@ static void test_velocity_error_deadband_suppresses_quantization_noise_only(void
     .velocityErrorDeadbandCounts = 1,
   };
   ControlInit(&g);
-  /* Exactly +-1 count/tick (the deadband's own boundary) -- a settled axis can't resolve
-   * any finer than this, so there's nothing genuine to correct. */
-  TEST_ASSERT_EQUAL_INT32(0, ControlTick(0, 0, 1, 1000));
-  TEST_ASSERT_EQUAL_INT32(0, ControlTick(0, 0, -1, 1000));
-  /* A genuinely larger error (2 counts, outside the 1-count deadband) still produces real
-   * torque -- this isn't just zeroing the proportional term unconditionally. */
-  TEST_ASSERT_EQUAL_INT32(-8, ControlTick(0, 0, 2, 1000));
+  TEST_ASSERT_EQUAL_INT32(-2, ControlTick(0, 0, 1, 1000));
+  TEST_ASSERT_EQUAL_INT32(2, ControlTick(0, 0, -1, 1000));
+  TEST_ASSERT_EQUAL_INT32(-6, ControlTick(0, 0, 2, 1000));
 }
 
 static void test_velocity_error_deadband_disabled_by_default_is_a_no_op(void) {
@@ -415,8 +501,8 @@ static void test_velocity_diagnostics_match_filter_and_deadband(void) {
   ControlGetVelocitySample(&sample);
   TEST_ASSERT_EQUAL_INT32(20,sample.reference);
   TEST_ASSERT_EQUAL_INT32(5,sample.filtered);
-  TEST_ASSERT_EQUAL_INT32(15,sample.error);
-  TEST_ASSERT_EQUAL_INT32(0,sample.controlError);
+  TEST_ASSERT_EQUAL_INT32(10,sample.error);
+  TEST_ASSERT_EQUAL_INT32(8,sample.controlError);
   ControlReset(); ControlGetVelocitySample(&sample);
   TEST_ASSERT_EQUAL_INT32(0,sample.reference);
   TEST_ASSERT_EQUAL_INT32(0,sample.filtered);
@@ -439,18 +525,76 @@ static void test_velocity_diagnostics_round_fractional_values_symmetrically(void
   TEST_ASSERT_EQUAL_INT32(1,sample.error);
 }
 
+static void test_noise_band_integrates_persistent_fractional_errors(void) {
+  ControlGains g = *ControlGetGains();
+  g.posGainQ8=0; g.velGainKpQ8=0; g.velGainKiQ8=256;
+  g.velocityErrorDeadbandCounts=1; g.velocityFilterShift=0;
+  g.velocityClamp=10000; g.torqueClampMin=-32767; g.torqueClampMax=32767;
+  ControlInit(&g);
+  int32_t output=0;
+  for (int i=0; i<4; i++) output=ControlTickWithReferenceQ8(0,0,0,64,1000);
+  TEST_ASSERT_EQUAL_INT32(1, output);
+  for (int i=0; i<4; i++) output=ControlTickWithReferenceQ8(0,0,0,64,1000);
+  TEST_ASSERT_EQUAL_INT32(2, output);
+  ControlReset();
+  for (int i=0; i<4; i++) output=ControlTickWithReferenceQ8(0,0,0,-64,1000);
+  TEST_ASSERT_EQUAL_INT32(-1, output);
+}
+static void test_noise_band_integral_accounts_for_reversing_encoder_errors(void) {
+  ControlGains g=*ControlGetGains();
+  g.velGainKpQ8=0; g.velGainKiQ8=256; g.velocityErrorDeadbandCounts=1;
+  g.velocityFilterShift=0; g.torqueClampMin=-32767; g.torqueClampMax=32767;
+  ControlInit(&g);
+  for (int i=0; i<100; i++) {
+    TEST_ASSERT_EQUAL_INT32(-1, ControlVelocityTick(0,1,1000));
+    TEST_ASSERT_EQUAL_INT32(0, ControlVelocityTick(0,-1,1000));
+  }
+}
+static void test_noise_band_boundary_is_continuous_at_fractional_resolution(void) {
+  ControlGains g=*ControlGetGains();
+  g.posGainQ8=0; g.velGainKpQ8=65536; g.velGainKiQ8=0;
+  g.velocityErrorDeadbandCounts=1; g.velocityFilterShift=0;
+  g.velocityClamp=10000; g.torqueClampMin=-32767; g.torqueClampMax=32767;
+  ControlInit(&g);
+  TEST_ASSERT_EQUAL_INT32(128, ControlTickWithReferenceQ8(0,0,0,255,1000));
+  TEST_ASSERT_EQUAL_INT32(128, ControlTickWithReferenceQ8(0,0,0,256,1000));
+  TEST_ASSERT_EQUAL_INT32(129, ControlTickWithReferenceQ8(0,0,0,257,1000));
+  TEST_ASSERT_EQUAL_INT32(-128, ControlTickWithReferenceQ8(0,0,0,-255,1000));
+  TEST_ASSERT_EQUAL_INT32(-128, ControlTickWithReferenceQ8(0,0,0,-256,1000));
+  TEST_ASSERT_EQUAL_INT32(-129, ControlTickWithReferenceQ8(0,0,0,-257,1000));
+}
+static void test_noise_band_preserves_integral_anti_windup(void) {
+  ControlGains g=*ControlGetGains();
+  g.posGainQ8=0; g.velGainKpQ8=1024; g.velGainKiQ8=256;
+  g.velocityErrorDeadbandCounts=1; g.velocityFilterShift=0;
+  g.velocityClamp=10000; g.torqueClampMin=-2; g.torqueClampMax=2;
+  ControlInit(&g);
+  for (int i=0; i<100; i++) ControlTickWithReferenceQ8(0,0,0,128,1000);
+  TEST_ASSERT_EQUAL_INT32(-1, ControlTickWithReferenceQ8(0,0,0,-128,1000));
+}
+
 int main(void) {
   UNITY_BEGIN();
+  RUN_TEST(test_noise_band_integrates_persistent_fractional_errors);
+  RUN_TEST(test_noise_band_integral_accounts_for_reversing_encoder_errors);
+  RUN_TEST(test_noise_band_boundary_is_continuous_at_fractional_resolution);
+  RUN_TEST(test_noise_band_preserves_integral_anti_windup);
   RUN_TEST(test_velocity_diagnostics_match_filter_and_deadband);
   RUN_TEST(test_velocity_diagnostics_round_fractional_values_symmetrically);
   RUN_TEST(test_command_specific_speed_limit_cannot_exceed_feedback_limit);
-  RUN_TEST(test_velocity_error_deadband_suppresses_quantization_noise_only);
+  RUN_TEST(test_velocity_error_noise_band_softens_proportional_only);
   RUN_TEST(test_velocity_error_deadband_disabled_by_default_is_a_no_op);
   RUN_TEST(test_fractional_reference_feedforward_is_preserved);
   RUN_TEST(test_acceleration_feedforward_uses_current_ramp_change);
   RUN_TEST(test_fractional_position_error_is_symmetric_and_nonzero);
   RUN_TEST(test_fractional_integral_accumulates_both_signs);
   RUN_TEST(test_velocity_filter_is_causal_and_resets);
+  RUN_TEST(test_p_filter_does_not_discard_or_repeatedly_integrate_counts);
+  RUN_TEST(test_p_filter_preserves_reference_and_decays_without_bias);
+  RUN_TEST(test_filtered_p_antiwindup_uses_raw_integral_error);
+  RUN_TEST(test_two_sample_p_average_has_finite_support);
+  RUN_TEST(test_p_average_hot_changes_use_recent_history);
+  RUN_TEST(test_p_average_all_windows_preserve_fractional_samples);
   RUN_TEST(test_velocity_feedforward_tracks_without_position_lag);
   RUN_TEST(test_feedforward_adds_feedback_and_clamps_total);
   RUN_TEST(test_step_response_converges);

@@ -91,7 +91,10 @@ def decode_frame(data):
         "velocity": velocity,
         "torque": torque,
         "cmd_position": cmd_position,
-        "cmd_velocity": cmd_velocity,
+        # Bit4 multiplexes this wire field during additive excitation.
+        "cmd_velocity": 0 if status & 0x10 else cmd_velocity,
+        "excitation": bool(status & 0x10),
+        "injected_torque": cmd_velocity if status & 0x10 else 0,
         # Divide by 65536.0 for torque-command units.
         "velocity_integral_q16": velocity_integral,
         # Commutation.c's electrical angle (degrees, 0..359),
@@ -110,7 +113,7 @@ def decode_frame(data):
         "mode": MODE_NAMES[status & 0x3],
         "enabled": bool((status >> 2) & 1),
         "fault_latched": bool((status >> 3) & 1),
-        "idle_reduced": bool((status >> 4) & 1),
+        "idle_reduced": False,  # reserved legacy display key
         "hw_enable": bool((status >> 5) & 1),
         "synthetic": bool((status >> 6) & 1),
         "cycle_start": bool((status >> 7) & 1),

@@ -29,15 +29,15 @@ static ControlGains sGains = {
   .torqueClampMax = TORQUE_FULL_SCALE,
 };
 
-/* Keep velocity errors in Q8 and accumulated torque in Q16. No per-tick
- * truncation of the integral, and no whole-count position-loop deadband.
- * There IS a whole-count VELOCITY-error deadband (velocityErrorDeadbandCounts,
- * default 0/disabled) -- see Control.h's field comment; a position-loop
- * deadband and this one solve different problems (masking a real residual
- * position error vs. ignoring unavoidable quantization noise in the
- * velocity signal) and aren't interchangeable. */
+/* Keep velocity errors in Q8 and accumulated torque in Q16. The optional
+ * velocity noise band softens P only; I always receives the full error so
+ * persistent fractional corrections are not discarded. See Control.h. */
 static int64_t sVelIntegralQ16 = 0;
 static int64_t sFilteredVelocityQ8 = 0;
+/* Finite-window P-feedback average: 1,2,4,8,16 samples. Keep history even
+ * when bypassed so hot filter changes cannot resurrect stale measurements. */
+static int32_t sVelocityHistory[16];
+static int sVelocityHistoryIndex = 0;
 static int sVelocityFilterInitialized = 0;
 static int64_t sPreviousReferenceVelocityQ8 = 0;
 static int64_t sReferenceAccelerationQ8 = 0;
@@ -50,6 +50,7 @@ void ControlInit(const ControlGains *gains) {
   if (gains) sGains = *gains;
   sVelIntegralQ16 = 0;
   sFilteredVelocityQ8 = 0;
+  sVelocityHistoryIndex = 0;
   sVelocityFilterInitialized = 0;
   sPreviousReferenceVelocityQ8 = 0;
   sReferenceAccelerationQ8 = 0;
@@ -75,30 +76,36 @@ static int32_t RoundQ16(int64_t v) {
 static int32_t VelocityTickQ8(int64_t targetQ8, int32_t measuredVelocity, int64_t torqueFeedforwardQ16) {
   int64_t measuredQ8 = (int64_t)measuredVelocity * 256;
   int shift = sGains.velocityFilterShift;
-  if (!sVelocityFilterInitialized || shift <= 0) {
-    sFilteredVelocityQ8 = measuredQ8;
+  if (shift < 0) shift = 0;
+  if (shift > 4) shift = 4;
+  if (!sVelocityFilterInitialized) {
+    for (int i=0;i<16;i++) sVelocityHistory[i] = measuredVelocity;
     sVelocityFilterInitialized = 1;
-  } else {
-    /* Causal one-pole estimator; shift=1 means alpha=1/2. Raw velocity
-     * remains available to monitor/fault logic. Filtering adds delay, so
-     * it is disabled by default and must earn its place on the bench. */
-    if (shift > 4) shift = 4;
-    sFilteredVelocityQ8 += (measuredQ8 - sFilteredVelocityQ8) / (1 << shift);
   }
+  sVelocityHistory[sVelocityHistoryIndex] = measuredVelocity;
+  int window = 1 << shift;
+  int64_t sum = 0;
+  for (int i=0;i<window;i++)
+    sum += sVelocityHistory[(sVelocityHistoryIndex + 16 - i) & 15];
+  sVelocityHistoryIndex = (sVelocityHistoryIndex + 1) & 15;
+  /* Average only P's measurement, preserving fractional velocity in Q8.
+   * Two samples add 0.5 tick group delay, and exactly cancel alternating
+   * one-count differences. Position, reference, I and fault input stay raw. */
+  sFilteredVelocityQ8 = sum * 256 / window;
   sLastVelocityTarget = (int32_t)(targetQ8 / 256);
-  int64_t errorQ8 = targetQ8 - sFilteredVelocityQ8;
+  int64_t errorQ8 = targetQ8 - measuredQ8;
   sLastVelocityReferenceQ8 = targetQ8;
   sLastVelocityErrorQ8 = errorQ8;
+  int64_t pErrorQ8 = targetQ8 - sFilteredVelocityQ8;
   if (sGains.velocityErrorDeadbandCounts > 0) {
-    int64_t deadbandQ8 = (int64_t)sGains.velocityErrorDeadbandCounts * 256;
-    /* >=/<=, not strict -- velocityActual is always a whole count, so errorQ8 against a
-     * whole-count target is always an exact multiple of 256; a strict < would never
-     * actually catch deadbandCounts=1's own boundary (exactly 1 count), making it a no-op
-     * for the one case it exists to suppress. */
-    if (errorQ8 >= -deadbandQ8 && errorQ8 <= deadbandQ8) errorQ8 = 0;
+    int64_t bandQ8 = (int64_t)sGains.velocityErrorDeadbandCounts * 256;
+    /* Continuous soft band: half slope inside, normal slope outside, with
+     * no boundary jump. Signed division keeps the mapping symmetric; Q8
+     * rounding can retain one extra fractional LSB. Never modify I's error. */
+    pErrorQ8 -= Clamp64(pErrorQ8, -bandQ8, bandQ8) / 2;
   }
-  sLastControlErrorQ8 = errorQ8;
-  int64_t pQ16 = errorQ8 * sGains.velGainKpQ8;
+  sLastControlErrorQ8 = pErrorQ8;
+  int64_t pQ16 = pErrorQ8 * sGains.velGainKpQ8;
   int64_t candidateQ16 = sVelIntegralQ16 + errorQ8 * sGains.velGainKiQ8;
   int64_t loQ16 = (int64_t)sGains.torqueClampMin * sTorqueScaleQ8 * 256;
   int64_t hiQ16 = (int64_t)sGains.torqueClampMax * sTorqueScaleQ8 * 256;
@@ -163,6 +170,7 @@ int32_t ControlVelocityTick(int32_t velocityTarget, int32_t velocityActual, uint
 void ControlReset(void) {
   sVelIntegralQ16 = 0;
   sFilteredVelocityQ8 = 0;
+  sVelocityHistoryIndex = 0;
   sVelocityFilterInitialized = 0;
   sPreviousReferenceVelocityQ8 = 0;
   sReferenceAccelerationQ8 = 0;

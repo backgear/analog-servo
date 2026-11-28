@@ -3,6 +3,7 @@
 #include "Control.h"
 #include "Encoder.h"
 #include "Fault.h"
+#include "Excitation.h"
 #include "usbd_cdc_composite_if.h"
 #include "usbd_cdc_composite.h"
 #include <stdint.h>
@@ -26,7 +27,9 @@ typedef struct __attribute__((packed)) {
                                      position target -- stale (not wrong, just unchanged)
                                      during polarity learning, raw open-loop signal
                                      torque, disabled, or autotune. */
-  int32_t  commandedVelocity;    /* DESIRED, not measured -- same staleness caveats */
+  int32_t  commandedVelocity;    /* DESIRED, not measured -- same staleness caveats.
+                                     When status bit4 is set: injected axis torque,
+                                     NOT velocity. */
   int32_t  velocityIntegral;     /* Diagnostic PI state in torque units * 65536.
                                      Bounded by the configured torque clamp. */
   int32_t  electricalAngleDeg;  /* Commutation.c's electrical angle (0..359 degrees),
@@ -66,7 +69,7 @@ typedef struct __attribute__((packed)) {
                                      converging over time in a capture instead of
                                      only point-queryable over the CLI. */
   uint8_t  status;           /* bits0-1 = mode (0 stepdir/1 velocity/2 analog), bit2 =
-                                 enabled, bit3 = fault latched, bit4 = reserved (always 0),
+                                 enabled, bit3 = fault latched, bit4 = excitation sample,
                                  bit5 = hardware ENABLE pin asserted, bit6 = synthetic
                                  (this tick's position/velocity/torque came from the
                                  polarity-learn test pulse, autotune, or the built-in
@@ -253,7 +256,8 @@ static void BuildSchemaJson(void) {
                (unsigned)offsetof(MonitorFrame, crc8));
   AppendSchema(&n,
     "],\"status_bits\":{\"mode\":\"0-1\",\"enabled\":2,\"fault_latched\":3,"
-    "\"hw_enable\":5,\"synthetic\":6,\"cycle_start\":7},"
+    "\"excitation\":4,\"hw_enable\":5,\"synthetic\":6,\"cycle_start\":7},"
+    "\"excitation_note\":\"bit4: commanded_velocity contains injected axis torque units\","
     "\"fault_reasons\":[" FAULT_REASON_NAMES_JSON "],"
     "\"crc8\":{\"poly\":7,\"init\":0,\"msb_first\":true,\"reflect\":false,"
     "\"xorout\":0,\"covers_bytes\":[0,%u]},"
@@ -268,7 +272,8 @@ const char *MonitorGetSchemaJson(void) {
 }
 
 static void BuildFrame(MonitorFrame *out, uint32_t seq) {
-  int synthetic = AppPolarityLearnBusy() || AppAutotuneBusy() || AppGetSignalActive();
+  int excitation = ExcitationSample();
+  int synthetic = AppPolarityLearnBusy() || AppAutotuneBusy() || AppGetSignalActive() || excitation;
   int cycleStart = AppGetSignalCycleStart();
 
   out->sync = MONITOR_FRAME_SYNC;
@@ -277,7 +282,7 @@ static void BuildFrame(MonitorFrame *out, uint32_t seq) {
   out->velocityCounts = AppGetLastVelocityActual();
   out->torqueCommand  = AppGetLastTorqueCommand();
   out->commandedPosition = AppGetLastCommandedPosition();
-  out->commandedVelocity = AppGetLastCommandedVelocity();
+  out->commandedVelocity = excitation ? ExcitationLast() : AppGetLastCommandedVelocity();
   out->velocityIntegral = (int32_t)ControlGetVelocityIntegralQ16();
   out->electricalAngleDeg = AppGetLastElectricalAngleDeg();
   out->hallSector = AppGetLastHallSector();
@@ -285,6 +290,7 @@ static void BuildFrame(MonitorFrame *out, uint32_t seq) {
   out->status = (uint8_t)(((uint8_t)AppGetServoMode() & 0x3U) |
                            (((uint8_t)AppGetEnabled() & 0x1U) << 2) |
                            (((uint8_t)FaultIsLatched() & 0x1U) << 3) |
+                           (((uint8_t)excitation & 0x1U) << 4) |
                            (((uint8_t)AppGetHwEnableAsserted() & 0x1U) << 5) |
                            (((uint8_t)synthetic & 0x1U) << 6) |
                            (((uint8_t)cycleStart & 0x1U) << 7));

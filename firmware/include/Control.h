@@ -20,31 +20,33 @@ typedef struct {
   int32_t velocityClamp;    /* combined reference + feedback velocity target cap */
   int32_t torqueClampMin, torqueClampMax;
   int32_t accelerationFeedforwardQ8; /* torque per counts/tick^2, Q8 */
-  int32_t velocityFilterShift; /* 0 raw; 1..4 causal IIR alpha=1/(2^shift) */
-  int32_t velocityErrorDeadbandCounts; /* counts/tick; |velocity error| at or below this is
-                                           treated as exactly 0 for BOTH the P and I terms.
-                                           0 disables (default -- existing behavior for anyone
-                                           who hasn't configured it). Exists because a single
-                                           +-1 count/tick of pure encoder quantization noise at
-                                           rest -- unavoidable, not a bug -- gets amplified by
-                                           a large velGainKpQ8 into a disproportionate torque
-                                           kick with no net motion: real wasted power/heat/
-                                           noise. Does NOT suppress a
-                                           genuine, larger tracking error -- only the
-                                           quantization-noise floor a correctly-settled axis
-                                           can never resolve more precisely than one count
-                                           anyway, so there is nothing to "correct" there. */
+  int32_t velocityFilterShift; /* P's measured velocity only: 0 raw;
+                                    1..4 average the last 2^shift samples.
+                                    At 1kHz, shift=1 adds 0.5ms delay.
+                                    Position, reference and I remain unfiltered. */
+  int32_t velocityErrorDeadbandCounts; /* Soft P noise-band width in counts/tick.
+                                           0 disables (default). P uses
+                                           e - clamp(e,-width,width)/2: half gain
+                                           inside, normal slope outside, continuous
+                                           and symmetric. I always sees full e.
+                                           No position counts or persistent errors
+                                           are discarded. Quantization/friction can
+                                           still produce small limit cycles. */
 } ControlGains;
 
 /* Readbacks use whole encoder counts/tick, rounded symmetrically from Q8.
- * error is before deadband; controlError is after deadband. */
+ * filtered is P's velocity estimate; error is reference minus RAW velocity
+ * (I's input); controlError is reference minus filtered, after P shaping.
+ * The integrator always uses error, not controlError. */
 typedef struct {
   int32_t reference, filtered, error, controlError;
 } ControlVelocitySample;
 void ControlGetVelocitySample(ControlVelocitySample *out);
 
 void ControlInit(const ControlGains *gains);
-void ControlSetGains(const ControlGains *gains);   /* hot-reloadable, e.g. via Protocol.c */
+/* Foreground callers must serialize gain updates/reset/init with tick calls;
+ * shared main.c does this using the common interrupt mask. */
+void ControlSetGains(const ControlGains *gains);
 const ControlGains *ControlGetGains(void);
 
 #define CONTROL_TORQUE_SCALE_FULL_Q8 256   /* 1.0 in Q8.8 -- no reduction */

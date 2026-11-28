@@ -26,7 +26,9 @@ def read_run(run_dir):
     rows = []
     with (run_dir / 'monitor.csv').open(newline='') as f:
         for row in csv.DictReader(f):
-            rows.append({k: int(v) for k, v in row.items()})
+            # Recorder writes the fault reason as a name (e.g. "none"),
+            # while the plotted measurements are integers.
+            rows.append({k: v if k == 'fault' else int(v) for k, v in row.items()})
     events = []
     events_path = run_dir / 'events.jsonl'
     if events_path.exists():

@@ -23,6 +23,7 @@
 #include "Adc.h"
 #include "Fault.h"
 #include "Signal.h"
+#include "Excitation.h"
 #include "Polarity.h"
 #include "Indicator.h"
 #include "ConfigStore.h"
@@ -226,6 +227,10 @@ static void ApplyConfigToModules(void) {
     .torqueClampMax = sConfig.torqueClampMax,
     .velocityErrorDeadbandCounts = sConfig.velocityErrorDeadbandCounts,
   };
+  /* Publish module settings together: the 1kHz ISR must not read a torn
+   * ControlGains copy or half-updated filter/ramp/fault configuration. */
+  uint32_t primask = __get_PRIMASK();
+  __disable_irq();
   ControlSetGains(&gains);
   FaultSetFollowingErrorConfig(sConfig.followingErrorLimitCounts, sConfig.followingErrorHardFault);
   FaultSetSustainedCurrentConfig(sConfig.sustainedCurrentMinTorque, sConfig.sustainedCurrentWindowTicks);
@@ -233,6 +238,7 @@ static void ApplyConfigToModules(void) {
   AnalogVelocitySetConfig(sConfig.analogVelocityScaleQ8, sConfig.analogVelocityHysteresisCounts);
   RampSetAcceleration(&sRamp, sConfig.rampAccelCountsPerTickPerSec);
   RampSetJerk(&sRamp, sConfig.velocityJerk);
+  __set_PRIMASK(primask);
 }
 
 ServoMode AppGetServoMode(void) { return sMode; }
@@ -252,6 +258,8 @@ int AppSetServoMode(ServoMode mode) {
 
 int  AppGetEnabled(void) { return sEnabled; }
 void AppSetEnabled(int enabled) {
+  uint32_t primask = __get_PRIMASK();
+  __disable_irq();
   sEnabled = enabled ? 1 : 0;
   sConfig.enabled = (uint8_t)sEnabled;   /* live-only -- `config save` persists it */
   if (sEnabled) {
@@ -263,6 +271,7 @@ void AppSetEnabled(int enabled) {
     /* Deliberately NOT PositionMoveInit()'d here, unlike AppSetServoMode() --
        disabling mid-move is a pause, not a cancel. */
   }
+  __set_PRIMASK(primask);
 }
 
 OutputTopology AppGetOutputTopology(void) { return sOutputTopology; }
@@ -616,7 +625,15 @@ void     AppRlsApply(void) {}
 
 void AppSignalStart(SignalType type, SignalTarget target, int32_t amplitude,
                      uint32_t halfPeriodTicks, uint32_t durationTicks) {
-  if (FaultIsLatched()) return;   /* can't run a test signal while faulted */
+  /* SignalStart initializes several fields including elapsed ticks. Never
+   * let the ISR observe a newly active signal with its old expired counter,
+   * nor a partially reset 64-bit PI/filter state. Preserve the caller's mask. */
+  uint32_t primask = __get_PRIMASK();
+  __disable_irq();
+  if (FaultIsLatched()) {
+    __set_PRIMASK(primask);
+    return;   /* can't run a test signal while faulted */
+  }
   FaultClear();   /* see AppPolarityLearn()'s comment -- fresh test, fresh window */
   int32_t amp = amplitude;
   if (target == SIGNAL_TARGET_TORQUE) {
@@ -628,6 +645,7 @@ void AppSignalStart(SignalType type, SignalTarget target, int32_t amplitude,
     ControlReset();   /* don't inherit a stale PI integrator from before */
   }
   SignalStart(type, target, amp, halfPeriodTicks, durationTicks);
+  __set_PRIMASK(primask);
 }
 void       AppSignalStop(void) { SignalStop(); }
 int        AppGetSignalActive(void) { return SignalIsActive(); }
@@ -701,6 +719,8 @@ void AppControlTick(void) {
   }
 #endif
 
+  if (ExcitationTakeMotionStop()) sCommandedVelocity = 0;
+  int rawExcitation = ExcitationActive() && ExcitationTorqueMode();
   int32_t torqueCommand = 0;
 
   if (sLearningActive) {
@@ -829,6 +849,18 @@ void AppControlTick(void) {
     }
     if (sConfig.polarityLearned) torqueCommand *= sConfig.polaritySign;
     HAL_GPIO_WritePin(SIGNAL_BUSY_GPIO_PORT, SIGNAL_BUSY_PIN, GPIO_PIN_RESET);
+  } else if (rawExcitation) {
+    /* No position or velocity feedback during direct torque identification.
+     * Track actual position so normal hold never returns to the old target.
+     * Clear integrator/ramp state before re-entry, including a host stop. */
+    ControlSetTorqueScale(CONTROL_TORQUE_SCALE_FULL_Q8);
+    ControlReset();
+    RampInit(&sRamp);
+    RampSetAcceleration(&sRamp, sConfig.rampAccelCountsPerTickPerSec);
+    RampSetJerk(&sRamp, sConfig.velocityJerk);
+    sPositionTargetAccum = EncoderGetPositionCounts();
+    sLastCommandedPosition = sPositionTargetAccum;
+    sLastCommandedVelocity = 0;
   } else if (sEnabled && !FaultIsLatched()) {
     int32_t positionTarget;
     int64_t referenceVelocityQ8 = 0;
@@ -899,9 +931,28 @@ void AppControlTick(void) {
     sPositionTargetAccum = EncoderGetPositionCounts();
   }
 
+  /* Independently recorded additive excitation, never a raw-output bypass.
+   * The normal holding target and all fault checks remain in force. */
+  int32_t injected = ExcitationTick(EncoderGetPositionCounts(), velocityActual,
+      sEnabled && hwEnableAsserted && !FaultIsLatched() &&
+      !sLearningActive && !AppAutotuneBusy() && !SignalIsActive() &&
+      sMode == SERVO_MODE_VELOCITY && sCommandedVelocity == ExcitationExpectedVelocity() &&
+      !PositionMoveIsActive(&sPositionMove));
+  if (ExcitationSample()) {
+    int sign = sConfig.polarityLearned ? sConfig.polaritySign : 1;
+    int64_t total = (int64_t)torqueCommand * sign + injected;
+    if (total < sConfig.torqueClampMin || total > sConfig.torqueClampMax) {
+      ExcitationRejectClipping();
+    } else {
+      torqueCommand = (int32_t)total * sign;
+    }
+  }
+
+  if (ExcitationTakeMotionStop()) sCommandedVelocity = 0;
+
   /* Following error is only meaningful when Control.c's cascade actually ran
    * this tick: the normal enabled path, or a SIGNAL_TARGET_POSITION signal. */
-  int useRealPositionError = (sEnabled && !sLearningActive &&
+  int useRealPositionError = (sEnabled && !rawExcitation && !sLearningActive &&
 #ifdef ANALOG_SERVO_TWO_PHASE_DRIVE
                                !sCommLearningActive && !sPoleLearnActive &&
 #endif
@@ -953,6 +1004,10 @@ void AppControlTick(void) {
 #ifdef ANALOG_SERVO_HAS_AUTOTUNE
     AutotuneStop();   /* ditto for an in-progress autotune */
 #endif
+    if (ExcitationActive() || ExcitationSample()) {
+      ExcitationStop(4);
+      (void)ExcitationTick(0, 0, 0); /* clear unapplied sample without misreporting clipping */
+    }
     OutputForceSafe();
     IndicatorSetState(INDICATOR_FAULT);
     sLastTorqueCommand = 0;

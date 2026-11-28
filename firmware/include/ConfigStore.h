@@ -40,9 +40,8 @@
  * tier-1 default -- tune on the bench. */
 #define CONFIG_DEFAULT_RAMP_ACCEL 1000
 
-/* See Control.h's ControlGains.velocityErrorDeadbandCounts field comment. 0
- * disables -- needed once vel_kp is tuned aggressively enough that +-1
- * count/tick of encoder quantization noise produces visible idle chatter. */
+/* Soft proportional noise-band width; see Control.h. 0 disables shaping.
+ * The full error always reaches I, including inside this band. */
 #define CONFIG_DEFAULT_VELOCITY_ERROR_DEADBAND_COUNTS 0
 
 /* output.topology=two_phase_analog placeholders (`two-phase-output` draft-PR
@@ -63,7 +62,8 @@ typedef struct {
   int32_t posGainQ8, velGainKpQ8, velGainKiQ8;
   int32_t torqueClampMin, torqueClampMax, velocityClamp;
   int32_t positionMoveFeedforwardQ8; /* 0..256; velocity/acceleration FF scale for point moves */
-  int32_t velocityFilterShift;       /* 0 raw; 1..4 causal estimator alpha=2^-shift */
+  int32_t velocityFilterShift;       /* P feedback only: 0 raw; 1..4 mean of 2^shift samples.
+                                          I and encoder position remain unfiltered. */
   int32_t accelerationFeedforwardQ8;  /* torque / (counts/tick^2), Q8; 0 disables */
   int32_t velocityJerk;              /* counts/tick/sec^2; 0 retains trapezoidal jogs */
   int32_t commandVelocityClamp;      /* 0 follows velocityClamp; otherwise trajectory speed cap */

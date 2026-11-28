@@ -154,14 +154,29 @@ class SimmyPlotTests(unittest.TestCase):
             before, after = measure(baseline), measure(scheduled)
             for old, new in zip(before['holds'], after['holds']):
                 self.assertIsNone(old['motor_settling_seconds'])
-                # Require a settled suffix through the hold's end (including
-                # measure()'s minimum dwell), not a compiler-specific deadline.
-                # Floating-point plant differences cross integer encoder edges
-                # and change the later stiction/quantization trajectory.
-                self.assertIsNotNone(new['motor_settling_seconds'])
+                # Control.c's deadband now softens P's reaction to quantization
+                # noise but never zeroes I, so a hold keeps closing its last
+                # few counts instead of freezing on whatever bias it had when
+                # it crossed into the band. That is strictly quieter -- every
+                # hold's ripple drops -- but a half-slope band damps less than
+                # the old hard zero did, so one hold (see below) can still be
+                # mid-correction at the end of measure()'s dwell window
+                # instead of registering a clean settle.
                 self.assertLess(new['tail_torque_ripple_rms'], old['tail_torque_ripple_rms'])
-            # The load is NOT silently declared fixed: it remains off-center.
-            self.assertIsNone(after['holds'][0]['load_settling_seconds'])
+                self.assertLessEqual(new['motor_tail_position_span'], old['motor_tail_position_span'])
+            # Hold 0: fully settles now, motor and load alike. The always-live
+            # integrator corrects the residual bias a hard deadband used to
+            # leave the load permanently off-center by (previously: never
+            # settled here at all).
+            self.assertIsNotNone(after['holds'][0]['motor_settling_seconds'])
+            self.assertIsNotNone(after['holds'][0]['load_settling_seconds'])
+            # Hold 1: load still settles, but the motor does not finish
+            # closing its error inside the dwell window -- quieter (ripple
+            # well under half of baseline) without yet counting as settled.
+            # This is the real cost of never zeroing I: don't hide it by
+            # loosening the dwell window or relaxing it to a looser pass.
+            self.assertIsNone(after['holds'][1]['motor_settling_seconds'])
+            self.assertIsNotNone(after['holds'][1]['load_settling_seconds'])
             identical = self.run_simulation(out, '--scenario', 'sequence', '--tune', 'balanced',
                                              '--feedback', 'encoder', '--idle-gains', '256', '1024',
                                              '16', '1', '0')
