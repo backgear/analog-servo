@@ -54,6 +54,7 @@ int     AppGetCommutationDetectPolesFailed(void) { return 0; }
 uint32_t AppGetLastTickCycles(void) { return 0; }
 uint32_t AppGetMaxTickCycles(void) { return 0; }
 int32_t  AppGetLastTickLoadPct(void) { return 0; }
+uint32_t AppGetBuildId(const uint8_t **id) { (void)id; return 0; }
 int  AppConfigSave(void) { return -1; }
 int  AppConfigLoad(void) { return -1; }
 void AppConfigDefaults(void) {}

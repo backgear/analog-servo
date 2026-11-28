@@ -1,6 +1,23 @@
 #ifndef MAIN_H
 #define MAIN_H
 
+/* Flash capacity, not MCU family, decides whether tuning and the second
+ * CLI transport are available. Compile their sources in both builds;
+ * --gc-sections drops unreachable implementations from the scarce build. */
+#if defined(STM32F103xB) && !defined(FLASH_IS_SCARCE)
+#ifndef ANALOG_SERVO_HAS_AUTOTUNE
+#define ANALOG_SERVO_HAS_AUTOTUNE
+#endif
+#ifndef ANALOG_SERVO_HAS_UART
+#define ANALOG_SERVO_HAS_UART
+#endif
+#endif
+
+#if defined(FLASH_IS_SCARCE) && \
+    (defined(ANALOG_SERVO_HAS_AUTOTUNE) || defined(ANALOG_SERVO_HAS_UART))
+#error "FLASH_IS_SCARCE excludes autotune/RLS and the UART CLI"
+#endif
+
 #if defined(STM32L152xE)
 #include "stm32l1xx_hal.h"
 #elif defined(STM32F103xB)
@@ -268,5 +285,10 @@ int32_t AppGetLastHallSector(void);
 uint32_t AppGetLastTickCycles(void);   /* whole-ISR DWT cycles, last tick */
 uint32_t AppGetMaxTickCycles(void);    /* peak since boot */
 int32_t  AppGetLastTickLoadPct(void);  /* integer percent of the 1kHz period */
+
+/* GNU build-ID of the running image, kept in flash by ld/STM32*_FLASH.ld: points
+ * *id at its bytes and returns their count, or returns 0 when the image
+ * carries no note. Compare against `readelf -n firmware.elf`. */
+uint32_t AppGetBuildId(const uint8_t **id);
 
 #endif /* MAIN_H */

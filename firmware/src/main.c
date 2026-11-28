@@ -10,6 +10,7 @@
  * natural owner.
  */
 #include "main.h"
+#include "BuildId.h"
 #include "gpio.h"
 #include "tim.h"
 #include "Encoder.h"
@@ -496,15 +497,11 @@ static int32_t ClampToTorqueRange(int32_t amp) {
 }
 #endif
 
-/* Both autotune mechanisms (the relay method below and RLS further down)
- * are excluded from F103 to recover flash -- see platformio.ini's
- * analog_servo_f103 build_src_filter comment. Same shape as
- * ANALOG_SERVO_TWO_PHASE_DRIVE's split: the REAL bodies (this branch) call
- * into Autotune.c/RLS.c/GainGlide.c, only ever reached when
- * ANALOG_SERVO_HAS_AUTOTUNE is defined (so those three .c files being
- * absent from an F103 build never leaves an unresolved symbol); the #else
- * branch below gives Protocol.c's `autotune.*`/`rls.*` commands degenerate
- * always-idle/always-none stand-ins so it doesn't need its own #ifdef. */
+/* FLASH_IS_SCARCE omits relay autotune and RLS to recover code space.
+ * With ANALOG_SERVO_HAS_AUTOTUNE, these bodies call Autotune/RLS/GainGlide;
+ * otherwise the stand-ins below keep the coordinator API available while
+ * Protocol.c omits the tuning CLI surface. Unused implementations are
+ * removed by the linker. */
 #ifdef ANALOG_SERVO_HAS_AUTOTUNE
 void AppAutotuneStartRelay(int32_t amplitude, uint32_t maxTicks) {
   if (FaultIsLatched()) return;   /* can't run a test while faulted */
@@ -1031,6 +1028,13 @@ int32_t AppGetLastHallSector(void) { return sLastHallSectorForTelemetry; }
 
 uint32_t AppGetLastTickCycles(void) { return sLastTickCycles; }
 uint32_t AppGetMaxTickCycles(void) { return sMaxTickCycles; }
+
+/* Bounds of the .note.gnu.build-id output section, from ld/STM32*_FLASH.ld. */
+extern const uint8_t __build_id_start[], __build_id_end[];
+
+uint32_t AppGetBuildId(const uint8_t **id) {
+  return BuildIdFromNote(__build_id_start, (uint32_t)(__build_id_end - __build_id_start), id);
+}
 
 #ifndef SYSCLK_HZ
 #error "SYSCLK_HZ must be defined by the env's build_flags (see platformio.ini)"

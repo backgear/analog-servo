@@ -8,11 +8,10 @@
 #include "Output.h"   /* TORQUE_FULL_SCALE for the default clamp values */
 
 #if defined(STM32F103xB)
-/* Last 1KB page of F103C8T6's documented 64K flash (0x08000000 + 0x10000 -
- * FLASH_PAGE_SIZE). Some genuine chips report more via the undocumented
- * "bonus flash" quirk (st-info may show 128K), but 64K is the only size
- * ST guarantees, so that's what this reserves against. */
-#define CONFIG_FLASH_PAGE_ADDR 0x0800FC00U
+/* The linker reserves the last 1 KiB page, outside the code region. Use
+ * its address directly; no probing or reliance on undocumented flash. */
+extern const uint8_t __config_flash_start;
+#define CONFIG_FLASH_PAGE_ADDR ((uint32_t)(uintptr_t)&__config_flash_start)
 #else
 /* Last 256B page of L152RE's 512K flash (0x08000000 + 0x80000 -
  * FLASH_PAGE_SIZE) -- L1's page size is 256B, not F103's 1KB. L1 program

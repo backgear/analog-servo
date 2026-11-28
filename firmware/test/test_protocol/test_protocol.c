@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include "Protocol.h"
+#include "BuildId.h"
 #include "main.h"
 #include "Encoder.h"
 #include "Fault.h"
@@ -104,6 +105,9 @@ static int32_t  sDiagTickLoadPct = 0;
 uint32_t AppGetLastTickCycles(void) { return sDiagTickCycles; }
 uint32_t AppGetMaxTickCycles(void) { return sDiagMaxTickCycles; }
 int32_t  AppGetLastTickLoadPct(void) { return sDiagTickLoadPct; }
+static const uint8_t *sBuildId = NULL;
+static uint32_t sBuildIdLen = 0;
+uint32_t AppGetBuildId(const uint8_t **id) { *id = sBuildId; return sBuildIdLen; }
 void AppSetFollowingErrorConfig(int32_t limit, int hard) {
   sConfig.followingErrorLimitCounts = limit;
   sConfig.followingErrorHardFault = hard ? 1 : 0;
@@ -298,6 +302,8 @@ void setUp(void) {
   sConfig.torqueClampMax = 1000;
   sConfig.rampAccelCountsPerTickPerSec = 1000;
   sAnalogRawAdc = 0;
+  sBuildId = NULL;
+  sBuildIdLen = 0;
   sAnalogReversed = 0;
   sHwEnableAsserted = 1;
   sConfigSaveCalls = sConfigLoadCalls = sConfigDefaultsCalls = 0;
@@ -364,7 +370,7 @@ static void run(const char *line) {
 /* ---- tests ------------------------------------------------------------------ */
 static void test_version(void) {
   run("version");
-  TEST_ASSERT_NOT_NULL(strstr(cap, "version=0.1.0"));
+  TEST_ASSERT_NOT_NULL(strstr(cap, "version=unknown\r\n"));   /* no FwVersion.h in native */
 }
 
 static void test_help_lists_commands(void) {
@@ -1312,6 +1318,65 @@ static void test_diag_tick_vars_are_read_only_and_wired(void) {
   TEST_ASSERT_NOT_NULL(strstr(cap, "error=read-only"));
 }
 
+static void test_build_id_prints_full_sha1_as_hex(void) {
+  static const uint8_t id[20] = {
+    0x00, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xff,
+    0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xa0,
+  };
+  sBuildId = id;
+  sBuildIdLen = sizeof(id);
+  run("get build.id");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "build.id=000123456789abcdefff102030405060708090a0\r\n"));
+  capReset();
+  run("settings");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "build.id=000123456789abcdefff102030405060708090a0\r\n"));
+  capReset();
+  run("set build.id 00");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "error=read-only"));
+}
+
+static void test_build_id_reports_none_without_note(void) {
+  run("get build.id");
+  TEST_ASSERT_NOT_NULL(strstr(cap, "build.id=none"));
+}
+
+/* BuildIdFromNote (BuildId.c): the decode main.c runs over the flash note. */
+static uint32_t gnuNote(uint8_t *buf, uint32_t nameLen, uint32_t type, const char *name, uint32_t descLen) {
+  uint32_t hdr[3] = { nameLen, descLen, type };
+  memcpy(buf, hdr, sizeof(hdr));
+  memcpy(buf + 12, name, 4);
+  for (uint32_t i = 0; i < descLen; i++) buf[16 + i] = (uint8_t)(0xA0 + i);
+  return 16U + descLen;
+}
+
+static void test_build_id_note_decodes_sha1(void) {
+  uint8_t note[36];
+  const uint8_t *id = NULL;
+  uint32_t size = gnuNote(note, 4, 3, "GNU", 20);
+  TEST_ASSERT_EQUAL_UINT32(36, size);
+  TEST_ASSERT_EQUAL_UINT32(20, BuildIdFromNote(note, size, &id));
+  TEST_ASSERT_EQUAL_PTR(note + 16, id);
+}
+
+static void test_build_id_note_rejects_empty_and_truncated(void) {
+  uint8_t note[36];
+  const uint8_t *id = NULL;
+  uint32_t size = gnuNote(note, 4, 3, "GNU", 20);
+  TEST_ASSERT_EQUAL_UINT32(0, BuildIdFromNote(note, 0, &id));     /* no note linked in */
+  TEST_ASSERT_EQUAL_UINT32(0, BuildIdFromNote(note, 15, &id));    /* header cut short */
+  TEST_ASSERT_EQUAL_UINT32(0, BuildIdFromNote(note, size - 1, &id));  /* desc cut short */
+  TEST_ASSERT_NULL(id);
+}
+
+static void test_build_id_note_rejects_other_notes(void) {
+  uint8_t note[36];
+  const uint8_t *id = NULL;
+  TEST_ASSERT_EQUAL_UINT32(0, BuildIdFromNote(note, gnuNote(note, 4, 1, "GNU", 20), &id));  /* NT_GNU_ABI_TAG */
+  TEST_ASSERT_EQUAL_UINT32(0, BuildIdFromNote(note, gnuNote(note, 4, 3, "ARM", 20), &id));
+  TEST_ASSERT_EQUAL_UINT32(0, BuildIdFromNote(note, gnuNote(note, 8, 3, "GNU", 20), &id));
+  TEST_ASSERT_NULL(id);
+}
+
 static void test_servo_mode_accepts_analog(void) {
   run("set input.source analog");
   TEST_ASSERT_NULL(strstr(cap, "error="));
@@ -1679,6 +1744,11 @@ int main(void) {
   RUN_TEST(test_sustained_current_config_rejects_invalid);
   RUN_TEST(test_output_zero_trim_roundtrip);
   RUN_TEST(test_diag_tick_vars_are_read_only_and_wired);
+  RUN_TEST(test_build_id_prints_full_sha1_as_hex);
+  RUN_TEST(test_build_id_reports_none_without_note);
+  RUN_TEST(test_build_id_note_decodes_sha1);
+  RUN_TEST(test_build_id_note_rejects_empty_and_truncated);
+  RUN_TEST(test_build_id_note_rejects_other_notes);
   RUN_TEST(test_servo_mode_accepts_analog);
   RUN_TEST(test_analog_config_roundtrip);
   RUN_TEST(test_analog_hysteresis_rejects_negative);
