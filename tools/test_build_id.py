@@ -64,6 +64,33 @@ class ElfBuildIdTests(unittest.TestCase):
             self.assertLess(len(image), 512 * 1024, str(elf))
             self.assertIn(whole, image, str(elf))
 
+    def test_f103_build_id_fits_before_config_on_both_sizes(self):
+        """The reader follows linker symbols, not a flash-size-dependent offset."""
+        for env, config_start in (('analog_servo_f103', 0x0800FC00),
+                                  ('analog_servo_f103_128k', 0x0801FC00)):
+            with self.subTest(env=env):
+                path = build_id.FIRMWARE_DIR / '.pio/build' / env / 'firmware.elf'
+                if not path.exists():
+                    self.skipTest(f'{env} not built')
+                data = path.read_bytes()
+                image = path.with_suffix('.bin').read_bytes()
+                self.assertLessEqual(len(image), config_start - 0x08000000)
+                shoff = struct.unpack_from('<I', data, 0x20)[0]
+                shentsize, shnum, shstrndx = struct.unpack_from('<HHH', data, 0x2E)
+                sections = [struct.unpack_from('<10I', data, shoff + i * shentsize)
+                            for i in range(shnum)]
+                strings = sections[shstrndx]
+                names = data[strings[4]:strings[4] + strings[5]]
+                notes = [s for s in sections
+                         if names[s[0]:].split(b'\0', 1)[0] == b'.note.gnu.build-id']
+                self.assertEqual(len(notes), 1)
+                section = notes[0]
+                address, offset, size = section[3:6]
+                self.assertGreaterEqual(address, 0x08000000)
+                self.assertLessEqual(address + size, config_start)
+                self.assertEqual(image[address - 0x08000000:address - 0x08000000 + size],
+                                 data[offset:offset + size])
+
 
 class CompareTests(unittest.TestCase):
     def run_main(self, board):

@@ -48,8 +48,14 @@ _Min_Stack_Size = 0x400; /* required amount of stack */
 MEMORY
 {
   RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 20K
-  FLASH    (rx)    : ORIGIN = 0x8000000,   LENGTH = 64K
+  FLASH    (rx)    : ORIGIN = 0x08000000, LENGTH = 63K
+  CONFIG   (r)     : ORIGIN = 0x0800FC00, LENGTH = 1K
 }
+
+/* Reserve config without placing bytes in the firmware image. */
+__config_flash_start = ORIGIN(CONFIG);
+ASSERT(ORIGIN(FLASH) + LENGTH(FLASH) == ORIGIN(CONFIG),
+       "Code flash must end at the config page")
 
 /* Sections */
 SECTIONS

@@ -94,6 +94,16 @@ SECTIONS
     . = ALIGN(4);
   } >FLASH
 
+  /* Match the 64 KiB script: the CLI reads this note through linker
+   * symbols, independent of flash size or the note's position in code. */
+  .note.gnu.build-id :
+  {
+    . = ALIGN(4);
+    __build_id_start = .;
+    KEEP(*(.note.gnu.build-id))
+    __build_id_end = .;
+  } >FLASH
+
   .ARM.extab   : {
     . = ALIGN(4);
     *(.ARM.extab* .gnu.linkonce.armextab.*)
