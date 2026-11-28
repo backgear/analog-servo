@@ -47,6 +47,11 @@ void Error_Handler(void) { __disable_irq(); while (1) { } }
  * PH0-OSC_IN), not a passive crystal -- the X3 crystal footprint is
  * unpopulated by default.
  *
+ * SERVO_CLOCK_HSI uses 16 MHz HSI -> PLL x6 /3 instead. USB enumerated
+ * and answered version/status on one board at room temperature; operation
+ * across temperature and supply changes is not bench-validated. HSI does
+ * not guarantee USB clock accuracy.
+ *
  * 32 MHz needs PWR voltage-scale range1 (1.8V) and 1 flash wait state.
  * APB1/APB2 both stay undivided -- also what Ramp.c's SYSCLK_HZ-driven
  * RAMP_DENOM assumes for TIM6's PSC (see tim_l1.c). */
@@ -58,11 +63,19 @@ void SystemClock_Config(void) {
   RCC_OscInitTypeDef osc = {0};
   RCC_ClkInitTypeDef clk = {0};
 
+#ifdef SERVO_CLOCK_HSI
+  osc.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  osc.HSIState = RCC_HSI_ON;
+  osc.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  osc.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  osc.PLL.PLLMUL = RCC_PLL_MUL6;
+#else
   osc.OscillatorType = RCC_OSCILLATORTYPE_HSE;
   osc.HSEState = RCC_HSE_BYPASS;
-  osc.PLL.PLLState = RCC_PLL_ON;
   osc.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   osc.PLL.PLLMUL = RCC_PLL_MUL12;
+#endif
+  osc.PLL.PLLState = RCC_PLL_ON;
   osc.PLL.PLLDIV = RCC_PLL_DIV3;
   if (HAL_RCC_OscConfig(&osc) != HAL_OK) Error_Handler();
 
