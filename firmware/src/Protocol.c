@@ -50,15 +50,9 @@ static void TxUsb(const uint8_t *data, uint16_t len) {
 #ifdef ANALOG_SERVO_HAS_UART
 static void TxUart(const uint8_t *data, uint16_t len) { UsartTransmit(data, len); }
 #else
-/* usart_f1.c/usart_l1.c (and the HAL UART driver chain they pull in)
- * aren't linked at all without ANALOG_SERVO_HAS_UART -- see
- * platformio.ini's analog_servo_f103 build_src_filter comment --
- * UsartTransmit() itself doesn't exist to call. sUartInst below keeps
- * initializing .tx to this no-op rather than disappearing entirely: its
- * RX ring never receives anything either (ProtocolRxFromIsrUart() is only
- * ever invoked from usart_f1.c/usart_l1.c's own RX ISR, which also isn't
- * linked), so TxUart never actually runs on this board -- only the
- * function body (not UsartTransmit's own flash/HAL-chain cost) stays. */
+/* Without the UART feature, neither initialization nor its interrupt
+ * handler references the driver. Keep this transport callback a no-op
+ * so link-time garbage collection can drop the UART/HAL chain too. */
 static void TxUart(const uint8_t *data, uint16_t len) { (void)data; (void)len; }
 #endif
 

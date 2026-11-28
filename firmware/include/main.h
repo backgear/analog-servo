@@ -1,6 +1,23 @@
 #ifndef MAIN_H
 #define MAIN_H
 
+/* Flash capacity, not MCU family, decides whether tuning and the second
+ * CLI transport are available. Compile their sources in both builds;
+ * --gc-sections drops unreachable implementations from the scarce build. */
+#if defined(STM32F103xB) && !defined(FLASH_IS_SCARCE)
+#ifndef ANALOG_SERVO_HAS_AUTOTUNE
+#define ANALOG_SERVO_HAS_AUTOTUNE
+#endif
+#ifndef ANALOG_SERVO_HAS_UART
+#define ANALOG_SERVO_HAS_UART
+#endif
+#endif
+
+#if defined(FLASH_IS_SCARCE) && \
+    (defined(ANALOG_SERVO_HAS_AUTOTUNE) || defined(ANALOG_SERVO_HAS_UART))
+#error "FLASH_IS_SCARCE excludes autotune/RLS and the UART CLI"
+#endif
+
 #if defined(STM32L152xE)
 #include "stm32l1xx_hal.h"
 #elif defined(STM32F103xB)
